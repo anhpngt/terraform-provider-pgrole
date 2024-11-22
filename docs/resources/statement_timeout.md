@@ -16,8 +16,6 @@ See https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATE
 ## Example Usage
 
 ```terraform
-# Copyright (c) HashiCorp, Inc.
-
 resource "pgrole_statement_timeout" "example" {
   role    = "user1"
   timeout = "30s"
@@ -37,8 +35,6 @@ resource "pgrole_statement_timeout" "example" {
 Import is supported using the following syntax:
 
 ```shell
-# Copyright (c) HashiCorp, Inc.
-
 # statement_timeout can be imported by specifying the role.
 terraform import pgrole_statement_timeout.example role
 ```

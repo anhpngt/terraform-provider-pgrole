@@ -13,8 +13,6 @@ A provider for managing roles' attributes inside a Cloud SQL PostgreSQL instance
 ## Example Usage
 
 ```terraform
-# Copyright (c) HashiCorp, Inc.
-
 provider "pgrole" {
   project_id = "my-gcp-project"
   region     = "asia-southeast1"

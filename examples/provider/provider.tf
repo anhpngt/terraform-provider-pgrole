@@ -1,5 +1,3 @@
-# Copyright (c) HashiCorp, Inc.
-
 provider "pgrole" {
   project_id = "my-gcp-project"
   region     = "asia-southeast1"
