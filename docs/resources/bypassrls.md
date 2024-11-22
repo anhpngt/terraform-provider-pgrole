@@ -13,7 +13,8 @@ Manage BYPASSRLS status for an existing role.
 ## Example Usage
 
 ```terraform
-# Manage BYPASSRLS for an existing role.
+# Copyright (c) HashiCorp, Inc.
+
 resource "pgrole_bypassrls" "example" {
   role    = "user1"
   enabled = true
@@ -36,6 +37,8 @@ resource "pgrole_bypassrls" "example" {
 Import is supported using the following syntax:
 
 ```shell
+# Copyright (c) HashiCorp, Inc.
+
 # bypassrls can be imported by specifying the role.
 terraform import pgrole_bypassrls.example role
 ```

@@ -1,3 +1,1 @@
-## 0.1.0 (Unreleased)
-
-FEATURES:
+See [Github releases](https://github.com/anhpngt/terraform-provider-pgrole/releases)
