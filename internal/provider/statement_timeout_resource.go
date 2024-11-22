@@ -3,58 +3,67 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = (*bypassrlsResource)(nil)
-	_ resource.ResourceWithConfigure   = (*bypassrlsResource)(nil)
-	_ resource.ResourceWithImportState = (*bypassrlsResource)(nil)
+	_ resource.Resource                = (*statementTimeoutResource)(nil)
+	_ resource.ResourceWithConfigure   = (*statementTimeoutResource)(nil)
+	_ resource.ResourceWithImportState = (*statementTimeoutResource)(nil)
 )
 
-// NewBypassRLSResource is a helper function to simplify the provider implementation.
-func NewBypassRLSResource() resource.Resource {
-	return &bypassrlsResource{}
+// NewStatementTimeoutResource is a helper function to simplify the provider implementation.
+func NewStatementTimeoutResource() resource.Resource {
+	return &statementTimeoutResource{}
 }
 
-type bypassrlsResource struct {
+type statementTimeoutResource struct {
 	getDB F
 }
 
 // Metadata returns the resource type name.
-func (r *bypassrlsResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_bypassrls"
+func (r *statementTimeoutResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_statement_timeout"
 }
 
+var timeoutAttributeRe = regexp.MustCompile(`^\d+s$`)
+
 // Schema defines the schema for the resource.
-func (r *bypassrlsResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *statementTimeoutResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manage BYPASSRLS status for an existing role.",
+		Description: `Manage statement_timeout for an existing role.
+
+See https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT for more details.`,
 		Attributes: map[string]schema.Attribute{
 			"role": schema.StringAttribute{
 				Description: "Name of the role.",
 				Required:    true,
 			},
-			"enabled": schema.BoolAttribute{
-				Description: "Whether to enable BYPASSRLS for the role.",
-				Optional:    true,
+			"timeout": schema.StringAttribute{
+				Description: "The timeout value, must be an integer follow by character \"s\", .e.g: 100s.",
+				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(timeoutAttributeRe, "Timeout must be in the format of <number>s, for example: 100s, 300s."),
+				},
 			},
 		},
 	}
 }
 
-type bypassrlsModel struct {
+type statementTimeoutModel struct {
 	Role    string `tfsdk:"role"`
-	Enabled bool   `tfsdk:"enabled"`
+	Timeout string `tfsdk:"timeout"`
 }
 
 // Configure adds the provider configured client to the resource.
-func (r *bypassrlsResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *statementTimeoutResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	// Add a nil check when handling ProviderData because Terraform
 	// sets that data after it calls the ConfigureProvider RPC.
 	if req.ProviderData == nil {
@@ -64,7 +73,7 @@ func (r *bypassrlsResource) Configure(_ context.Context, req resource.ConfigureR
 	client, ok := req.ProviderData.(F)
 	if !ok {
 		resp.Diagnostics.AddError(
-			"Unexpected Data Source Configure Type",
+			"Unexpected Source Configure Type",
 			fmt.Sprintf("Expected provider.F, got %T", req.ProviderData),
 		)
 	}
@@ -73,9 +82,9 @@ func (r *bypassrlsResource) Configure(_ context.Context, req resource.ConfigureR
 }
 
 // Create creates the resource and sets the initial Terraform state.
-func (r *bypassrlsResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+func (r *statementTimeoutResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	// Retrieve value from plan
-	var plan bypassrlsModel
+	var plan statementTimeoutModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -83,12 +92,7 @@ func (r *bypassrlsResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	// Create the resource
-	var sqlstr string
-	if plan.Enabled {
-		sqlstr = sqlEnableBypassRLS(plan.Role)
-	} else {
-		sqlstr = sqlDisableBypassRLS(plan.Role)
-	}
+	sqlstr := sqlSetStatementTimeout(plan.Role, plan.Timeout)
 
 	db, err := r.getDB(ctx)
 	if err != nil {
@@ -116,16 +120,16 @@ func (r *bypassrlsResource) Create(ctx context.Context, req resource.CreateReque
 }
 
 // Read refreshes the Terraform state with the latest data.
-func (r *bypassrlsResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+func (r *statementTimeoutResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	// Get the current state
-	var state bypassrlsModel
+	var state statementTimeoutModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Get the actual BYPASSRLS state in postgres
+	// Read the current value from the database
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -136,25 +140,28 @@ func (r *bypassrlsResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 	defer db.Close()
 
-	var enabled bool
-	if err := db.QueryRowContext(ctx, "SELECT rolbypassrls FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&enabled); err != nil {
+	var timeoutSetting string
+	sqlstr := `SELECT setting
+FROM (
+	SELECT UNNEST(rolconfig) AS setting
+	FROM pg_roles
+	WHERE rolname = $1
+) t
+WHERE setting LIKE 'statement_timeout=%' LIMIT 1;`
+	if err := db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&timeoutSetting); err != nil {
 		resp.Diagnostics.AddError(
-			"Failed to query BYPASSRLS status",
-			fmt.Sprintf("Failed to query BYPASSRLS status for role %s: %s", state.Role, err),
+			"Failed to execute SQL",
+			"Failed to execute SQL: "+err.Error(),
 		)
 		return
 	}
-	tflog.Debug(ctx, "Read BYPASSRLS for role", map[string]any{
-		"role": state.Role,
-		"got":  enabled,
-		"want": state.Enabled,
-	})
+	timeout := timeoutSetting[18:] // equivalent to timeoutSetting[len("statement_timeout="):]
 
-	// Overwrite the state with the actual state
-	state.Enabled = enabled
+	// Overwrite the state with the actual value
+	state.Timeout = timeout
 
-	// Set refreshed state
-	diags = resp.State.Set(ctx, &state)
+	// Set state to fully populated data
+	diags = resp.State.Set(ctx, state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -162,23 +169,17 @@ func (r *bypassrlsResource) Read(ctx context.Context, req resource.ReadRequest, 
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
-func (r *bypassrlsResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+func (r *statementTimeoutResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	// Retrieve value from plan
-	var plan bypassrlsModel
+	var plan statementTimeoutModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Update resource state with updated values
-	var sqlstr string
-	if plan.Enabled {
-		sqlstr = sqlEnableBypassRLS(plan.Role)
-	} else {
-		sqlstr = sqlDisableBypassRLS(plan.Role)
-	}
-
+	// Update statement_timeout in database
+	sqlstr := sqlSetStatementTimeout(plan.Role, plan.Timeout)
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -196,6 +197,7 @@ func (r *bypassrlsResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
+	// Set state to updated value
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -204,17 +206,17 @@ func (r *bypassrlsResource) Update(ctx context.Context, req resource.UpdateReque
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
-func (r *bypassrlsResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+func (r *statementTimeoutResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	// Retrieve value from state
-	var state bypassrlsModel
+	var state statementTimeoutModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Delete the resource
-	sqlstr := sqlDisableBypassRLS(state.Role)
+	// Reset statement_timeout in database
+	sqlstr := sqlResetStatementTimeout(state.Role)
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -233,15 +235,15 @@ func (r *bypassrlsResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 }
 
-func (r *bypassrlsResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.State.SetAttribute(ctx, path.Root("enabled"), false)
+func (r *statementTimeoutResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.State.SetAttribute(ctx, path.Root("timeout"), "0s")
 	resource.ImportStatePassthroughID(ctx, path.Root("role"), req, resp)
 }
 
-func sqlEnableBypassRLS(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q BYPASSRLS;", role)
+func sqlSetStatementTimeout(role, timeout string) string {
+	return fmt.Sprintf("ALTER ROLE %q SET statement_timeout = '%s';", role, timeout)
 }
 
-func sqlDisableBypassRLS(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q NOBYPASSRLS;", role)
+func sqlResetStatementTimeout(role string) string {
+	return fmt.Sprintf("ALTER ROLE %q RESET statement_timeout;", role)
 }

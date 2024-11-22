@@ -1,6 +1,3 @@
-// Copyright (c) HashiCorp, Inc.
-// SPDX-License-Identifier: MPL-2.0
-
 package provider
 
 import (
@@ -214,6 +211,7 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 func (p *pgroleProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewBypassRLSResource,
+		NewStatementTimeoutResource,
 	}
 }
 
