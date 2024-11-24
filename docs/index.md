@@ -36,7 +36,7 @@ provider "pgrole" {
 - `database` (String) The name of the database to connect to. Default to postgres
 - `impersonate_service_account` (String) The service account to impersonate when connecting to the database.
 
-When using this option, you must ensure:
+  When using this option, you must ensure:
 
-  * The impersonated service account has sufficient permissions to connect to the database
-  * The principal (that is impersonating the service account) has sufficient permissions to impersonate the service account
+    * The impersonated service account has sufficient permissions to connect to the database
+    * The principal (that is impersonating the service account) has sufficient permissions to impersonate the service account

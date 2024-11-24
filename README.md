@@ -2,7 +2,7 @@
 
 This provider allows to manage settings and configurations of existing roles (created by some other mechanisms) in [PostgreSQL](https://www.postgresql.org/).
 
-This aims at using Google's [Cloud SQL for PostgreSQL](https://cloud.google.com/sql/docs/postgres), where [google_sql_user](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/sql_user) is used to create roles in PostgreSQL but further configurations for those roles are impossible.
+This aims at using Google's [Cloud SQL for PostgreSQL](https://cloud.google.com/sql/docs/postgres), where [google_sql_user](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/sql_user) is used to create roles in PostgreSQL but further configurations for those roles are not supported innately.
 
 ## Quick Starts
 
@@ -11,7 +11,7 @@ This aims at using Google's [Cloud SQL for PostgreSQL](https://cloud.google.com/
 ## Requirements
 
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.23
+- [Go](https://golang.org/doc/install) >= 1.22
 
 ## Building The Provider
 
@@ -29,10 +29,12 @@ To compile the provider, run `make install`. This will build the provider and pu
 
 To generate or update documentation, run `make generate`.
 
-In order to run the full suite of Acceptance tests, run `make testacc`.
+Testing are still under development for now.
+
+<!-- In order to run the full suite of Acceptance tests, run `make testacc`.
 
 *Note:* Acceptance tests create real resources, and often cost money to run.
 
 ```shell
 make testacc
-```
+``` -->
