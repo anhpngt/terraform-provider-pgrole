@@ -3,67 +3,57 @@ package provider
 import (
 	"context"
 	"fmt"
-	"regexp"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = (*statementTimeoutResource)(nil)
-	_ resource.ResourceWithConfigure   = (*statementTimeoutResource)(nil)
-	_ resource.ResourceWithImportState = (*statementTimeoutResource)(nil)
+	_ resource.Resource                = (*replicationResource)(nil)
+	_ resource.ResourceWithConfigure   = (*replicationResource)(nil)
+	_ resource.ResourceWithImportState = (*replicationResource)(nil)
 )
 
-// NewStatementTimeoutResource is a helper function to simplify the provider implementation.
-func NewStatementTimeoutResource() resource.Resource {
-	return &statementTimeoutResource{}
+// NewBypassRLSResource is a helper function to simplify the provider implementation.
+func NewReplicationResource() resource.Resource {
+	return &replicationResource{}
 }
 
-type statementTimeoutResource struct {
+type replicationResource struct {
 	getDB F
 }
 
 // Metadata returns the resource type name.
-func (r *statementTimeoutResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_statement_timeout"
+func (r *replicationResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_replication"
 }
 
-var timeoutAttributeRe = regexp.MustCompile(`^\d+s$`)
-
 // Schema defines the schema for the resource.
-func (r *statementTimeoutResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *replicationResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: `Manage statement_timeout for an existing role.
-
-See Postgres [documentation](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT) for more details.`,
+		MarkdownDescription: "Manage REPLICATION status for an existing role. See PostgreSQL [ALTER ROLE](https://www.postgresql.org/docs/current/sql-alterrole.html).",
 		Attributes: map[string]schema.Attribute{
 			"role": schema.StringAttribute{
 				Description: "Name of the role.",
 				Required:    true,
 			},
-			"timeout": schema.StringAttribute{
-				Description: "The timeout value, must be an integer follow by character \"s\", .e.g: 100s.",
-				Required:    true,
-				Validators: []validator.String{
-					stringvalidator.RegexMatches(timeoutAttributeRe, "Timeout must be in the format of <number>s, for example: 100s, 300s."),
-				},
+			"enabled": schema.BoolAttribute{
+				Description: "Whether to enable REPLICATION for the role.",
+				Optional:    true,
 			},
 		},
 	}
 }
 
-type statementTimeoutModel struct {
+type replicationModel struct {
 	Role    string `tfsdk:"role"`
-	Timeout string `tfsdk:"timeout"`
+	Enabled bool   `tfsdk:"enabled"`
 }
 
 // Configure adds the provider configured client to the resource.
-func (r *statementTimeoutResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *replicationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	// Add a nil check when handling ProviderData because Terraform
 	// sets that data after it calls the ConfigureProvider RPC.
 	if req.ProviderData == nil {
@@ -73,7 +63,7 @@ func (r *statementTimeoutResource) Configure(_ context.Context, req resource.Con
 	client, ok := req.ProviderData.(F)
 	if !ok {
 		resp.Diagnostics.AddError(
-			"Unexpected Source Configure Type",
+			"Unexpected Data Source Configure Type",
 			fmt.Sprintf("Expected provider.F, got %T", req.ProviderData),
 		)
 	}
@@ -82,9 +72,9 @@ func (r *statementTimeoutResource) Configure(_ context.Context, req resource.Con
 }
 
 // Create creates the resource and sets the initial Terraform state.
-func (r *statementTimeoutResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+func (r *replicationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	// Retrieve value from plan
-	var plan statementTimeoutModel
+	var plan replicationModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -92,7 +82,12 @@ func (r *statementTimeoutResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	// Create the resource
-	sqlstr := sqlSetStatementTimeout(plan.Role, plan.Timeout)
+	var sqlstr string
+	if plan.Enabled {
+		sqlstr = sqlEnableReplication(plan.Role)
+	} else {
+		sqlstr = sqlDisableReplication(plan.Role)
+	}
 
 	db, err := r.getDB(ctx)
 	if err != nil {
@@ -120,16 +115,16 @@ func (r *statementTimeoutResource) Create(ctx context.Context, req resource.Crea
 }
 
 // Read refreshes the Terraform state with the latest data.
-func (r *statementTimeoutResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+func (r *replicationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	// Get the current state
-	var state statementTimeoutModel
+	var state bypassrlsModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Read the current value from the database
+	// Get the actual state in postgres
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -140,28 +135,20 @@ func (r *statementTimeoutResource) Read(ctx context.Context, req resource.ReadRe
 	}
 	defer db.Close()
 
-	var timeoutSetting string
-	sqlstr := `SELECT setting
-FROM (
-	SELECT UNNEST(rolconfig) AS setting
-	FROM pg_roles
-	WHERE rolname = $1
-) t
-WHERE setting LIKE 'statement_timeout=%' LIMIT 1;`
-	if err := db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&timeoutSetting); err != nil {
+	var enabled bool
+	if err := db.QueryRowContext(ctx, "SELECT rolreplication FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&enabled); err != nil {
 		resp.Diagnostics.AddError(
-			"Failed to execute SQL",
-			"Failed to execute SQL: "+err.Error(),
+			"Failed to query REPLICATION status",
+			fmt.Sprintf("Failed to query REPLICATION status for role %s: %s", state.Role, err),
 		)
 		return
 	}
-	timeout := timeoutSetting[18:] // equivalent to timeoutSetting[len("statement_timeout="):]
 
-	// Overwrite the state with the actual value
-	state.Timeout = timeout
+	// Overwrite the state with the actual state
+	state.Enabled = enabled
 
-	// Set state to fully populated data
-	diags = resp.State.Set(ctx, state)
+	// Set refreshed state
+	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -169,17 +156,23 @@ WHERE setting LIKE 'statement_timeout=%' LIMIT 1;`
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
-func (r *statementTimeoutResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+func (r *replicationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	// Retrieve value from plan
-	var plan statementTimeoutModel
+	var plan replicationModel
 	diags := req.Plan.Get(ctx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Update statement_timeout in database
-	sqlstr := sqlSetStatementTimeout(plan.Role, plan.Timeout)
+	// Update resource state with updated values
+	var sqlstr string
+	if plan.Enabled {
+		sqlstr = sqlEnableReplication(plan.Role)
+	} else {
+		sqlstr = sqlDisableReplication(plan.Role)
+	}
+
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -197,7 +190,6 @@ func (r *statementTimeoutResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	// Set state to updated value
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -206,17 +198,17 @@ func (r *statementTimeoutResource) Update(ctx context.Context, req resource.Upda
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
-func (r *statementTimeoutResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+func (r *replicationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	// Retrieve value from state
-	var state statementTimeoutModel
+	var state replicationModel
 	diags := req.State.Get(ctx, &state)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Reset statement_timeout in database
-	sqlstr := sqlResetStatementTimeout(state.Role)
+	// Delete the resource
+	sqlstr := sqlDisableReplication(state.Role)
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -235,15 +227,15 @@ func (r *statementTimeoutResource) Delete(ctx context.Context, req resource.Dele
 	}
 }
 
-func (r *statementTimeoutResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.State.SetAttribute(ctx, path.Root("timeout"), "0s")
+func (r *replicationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.State.SetAttribute(ctx, path.Root("enabled"), false)
 	resource.ImportStatePassthroughID(ctx, path.Root("role"), req, resp)
 }
 
-func sqlSetStatementTimeout(role, timeout string) string {
-	return fmt.Sprintf("ALTER ROLE %q SET statement_timeout = '%s';", role, timeout)
+func sqlEnableReplication(role string) string {
+	return fmt.Sprintf("ALTER ROLE %q REPLICATION;", role)
 }
 
-func sqlResetStatementTimeout(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q RESET statement_timeout;", role)
+func sqlDisableReplication(role string) string {
+	return fmt.Sprintf("ALTER ROLE %q NOREPLICATION;", role)
 }

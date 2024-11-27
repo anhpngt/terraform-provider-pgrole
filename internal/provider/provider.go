@@ -218,6 +218,7 @@ func (p *pgroleProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewBypassRLSResource,
 		NewStatementTimeoutResource,
 		NewConnectionLimitResource,
+		NewReplicationResource,
 	}
 }
 

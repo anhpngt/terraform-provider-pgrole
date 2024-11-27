@@ -4,14 +4,14 @@ page_title: "pgrole_statement_timeout Resource - pgrole"
 subcategory: ""
 description: |-
   Manage statement_timeout for an existing role.
-  See https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT for more details.
+  See Postgres documentation https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT for more details.
 ---
 
 # pgrole_statement_timeout (Resource)
 
 Manage statement_timeout for an existing role.
 
-See https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT for more details.
+See Postgres [documentation](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT) for more details.
 
 ## Example Usage
 
