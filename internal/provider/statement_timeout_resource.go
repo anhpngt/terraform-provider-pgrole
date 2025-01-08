@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -148,17 +151,19 @@ FROM (
 	WHERE rolname = $1
 ) t
 WHERE setting LIKE 'statement_timeout=%' LIMIT 1;`
-	if err := db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&timeoutSetting); err != nil {
+	err = db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&timeoutSetting)
+	switch { // Overwrite the state with the actual value
+	case errors.Is(err, sql.ErrNoRows):
+		state.Timeout = "0s"
+	case err == nil:
+		state.Timeout = strings.TrimPrefix(timeoutSetting, "statement_timeout=")
+	default:
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
 		)
 		return
 	}
-	timeout := timeoutSetting[18:] // equivalent to timeoutSetting[len("statement_timeout="):]
-
-	// Overwrite the state with the actual value
-	state.Timeout = timeout
 
 	// Set state to fully populated data
 	diags = resp.State.Set(ctx, state)
