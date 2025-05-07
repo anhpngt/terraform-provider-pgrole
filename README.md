@@ -55,7 +55,7 @@ and run it locally (probably against your own infrastructure) using [dev_overrid
     ```
     provider_installation {
         dev_overrides {
-            "anhpngt/pgrole" = "/home/anhpngt/go/bin"
+            "anhpngt/pgrole" = "/home/USER/go/bin"
         }
 
         direct {}
