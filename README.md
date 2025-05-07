@@ -29,12 +29,43 @@ To compile the provider, run `make install`. This will build the provider and pu
 
 To generate or update documentation, run `make generate`.
 
-Testing are still under development for now.
+Testing are still under development for now. However, you can compile this provider
+and run it locally (probably against your own infrastructure) using [dev_overrides](https://developer.hashicorp.com/terraform/cli/config/config-file#development-overrides-for-provider-developers):
 
-<!-- In order to run the full suite of Acceptance tests, run `make testacc`.
+1. Build this provider (after updating it to your needs):
 
-*Note:* Acceptance tests create real resources, and often cost money to run.
+    ```sh
+    go install ./
+    ```
 
-```shell
-make testacc
-``` -->
+2. The above command should install `terraform-provider-pgrole` to your `$GOPATH/bin`. Check with:
+
+    ```sh
+    # cd to the bin directory
+    $ cd $(go env GOPATH)/bin
+    # run the plugin binary to ensure it built correctly
+    $ ./terraform-provider-pgrole
+    This binary is a plugin. These are not meant to be executed directly.
+    Please execute the program that consumes these plugins, which will
+    load any plugins automatically
+    ```
+
+3. Create a `.terraformrc` file in your HOME directory with the following content:
+
+    ```
+    provider_installation {
+        dev_overrides {
+            "anhpngt/pgrole" = "/home/anhpngt/go/bin"
+        }
+
+        direct {}
+    }
+    ```
+
+4. Now you can run terraform to use the locally-developed provider.
+
+    ```sh
+    cd your/terraform/repo
+    terraform init
+    terraform plan
+    ```

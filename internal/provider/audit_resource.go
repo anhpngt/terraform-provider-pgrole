@@ -2,11 +2,15 @@ package provider
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -131,13 +135,32 @@ func (r *auditResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	defer db.Close()
 
 	var auditLogOption string
-	if err := db.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('pgaudit.log') FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&auditLogOption); err != nil {
+	sqlstr := `SELECT setting
+FROM (
+	SELECT UNNEST(rolconfig) AS setting
+	FROM pg_roles
+	WHERE rolname = $1
+) t
+WHERE setting LIKE 'pgaudit.log=%' LIMIT 1;`
+	err = db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&auditLogOption)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		auditLogOption = "none"
+	case err == nil:
+		auditLogOption = strings.TrimPrefix(auditLogOption, "pgaudit.log=")
+	default:
+
 		resp.Diagnostics.AddError(
 			"Failed to query pgaudit.log value",
 			fmt.Sprintf("Failed to query pgaudit.log value for role %s: %s", state.Role, err),
 		)
 		return
 	}
+	tflog.Info(ctx, "Read pgaudit.log setting for role", map[string]any{
+		"role": state.Role,
+		"got":  auditLogOption,
+		"want": state.AuditLogOption,
+	})
 
 	// Overwrite the state with the actual state
 	state.AuditLogOption = auditLogOption
