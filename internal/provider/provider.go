@@ -28,12 +28,19 @@ type pgroleProvider struct {
 
 // pgroleModel describes the provider data model.
 type pgroleModel struct {
+	// Cloud SQL connection parameters
 	ProjectID                 types.String `tfsdk:"project_id"`
 	Region                    types.String `tfsdk:"region"`
 	Instance                  types.String `tfsdk:"instance"`
 	Database                  types.String `tfsdk:"database"`
 	Username                  types.String `tfsdk:"username"`
 	ImpersonateServiceAccount types.String `tfsdk:"impersonate_service_account"`
+
+	// Standard PostgreSQL connection parameters
+	Host     types.String `tfsdk:"host"`
+	Port     types.Int64  `tfsdk:"port"`
+	Password types.String `tfsdk:"password"`
+	SSLMode  types.String `tfsdk:"sslmode"`
 }
 
 func (p *pgroleProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -43,22 +50,25 @@ func (p *pgroleProvider) Metadata(ctx context.Context, req provider.MetadataRequ
 
 func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A provider for managing roles' attributes inside a Cloud SQL PostgreSQL instance.",
+		Description: "A provider for managing roles' attributes inside a PostgreSQL instance (Cloud SQL or standard).",
 		Attributes: map[string]schema.Attribute{
+			// Cloud SQL specific parameters
 			"project_id": schema.StringAttribute{
-				Description: "The Google Cloud project ID of the Cloud SQL instance.",
-				Required:    true,
+				Description: "The Google Cloud project ID of the Cloud SQL instance. Required if using Cloud SQL.",
+				Optional:    true,
 			},
 			"region": schema.StringAttribute{
-				Description: "The region of the Cloud SQL instance.",
-				Required:    true,
+				Description: "The region of the Cloud SQL instance. Required if using Cloud SQL.",
+				Optional:    true,
 			},
 			"instance": schema.StringAttribute{
-				Description: "The name of the Cloud SQL instance.",
-				Required:    true,
+				Description: "The name of the Cloud SQL instance. Required if using Cloud SQL.",
+				Optional:    true,
 			},
+
+			// Common parameters
 			"database": schema.StringAttribute{
-				Description: "The name of the database to connect to. Default to postgres",
+				Description: "The name of the database to connect to. Defaults to postgres.",
 				Optional:    true,
 			},
 			"username": schema.StringAttribute{
@@ -74,6 +84,25 @@ func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest,
     * The principal (that is impersonating the service account) has sufficient permissions to impersonate the service account`,
 				Optional: true,
 			},
+
+			// Standard PostgreSQL parameters
+			"host": schema.StringAttribute{
+				Description: "The host of the PostgreSQL server. Required if using standard PostgreSQL.",
+				Optional:    true,
+			},
+			"port": schema.Int64Attribute{
+				Description: "The port of the PostgreSQL server. Default is 5432.",
+				Optional:    true,
+			},
+			"password": schema.StringAttribute{
+				Description: "Password for the server connection. Required if using standard PostgreSQL.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"sslmode": schema.StringAttribute{
+				Description: "SSL mode for the server connection. Default is 'disable'.",
+				Optional:    true,
+			},
 		},
 	}
 }
@@ -87,8 +116,7 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		return
 	}
 
-	// If practitioner provided a configuration value for any of the
-	// attributes, it must be a known value.
+	// Check for unknown values in configuration
 	if config.ProjectID.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("project_id"),
@@ -131,16 +159,50 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 			"unknown impersonate_service_account",
 		)
 	}
+	if config.Host.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("host"),
+			"unknown host",
+			"unknown host",
+		)
+	}
+	if config.Port.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("port"),
+			"unknown port",
+			"unknown port",
+		)
+	}
+	if config.Password.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("password"),
+			"unknown password",
+			"unknown password",
+		)
+	}
+	if config.SSLMode.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("sslmode"),
+			"unknown sslmode",
+			"unknown sslmode",
+		)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	// Extract values from configuration
 	projectID := ""
 	region := ""
 	instance := ""
 	database := "postgres"
 	username := ""
 	impersonateServiceAccount := ""
+	host := ""
+	port := int64(5432) // Default PostgreSQL port
+	password := ""
+	sslmode := "disable" // Default to disable SSL
+
 	if !config.ProjectID.IsNull() {
 		projectID = config.ProjectID.ValueString()
 	}
@@ -159,56 +221,76 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	if !config.ImpersonateServiceAccount.IsNull() {
 		impersonateServiceAccount = config.ImpersonateServiceAccount.ValueString()
 	}
-
-	// If any of the expected configurations are missing, return
-	// errors with provider-specific guidance.
-	if projectID == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("project_id"),
-			"missing project_id",
-			"missing project_id",
-		)
+	if !config.Host.IsNull() {
+		host = config.Host.ValueString()
 	}
-	if region == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("region"),
-			"missing region",
-			"missing region",
-		)
+	if !config.Port.IsNull() {
+		port = config.Port.ValueInt64()
 	}
-	if instance == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("instance"),
-			"missing instance",
-			"missing instance",
-		)
+	if !config.Password.IsNull() {
+		password = config.Password.ValueString()
 	}
-	if database == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("database"),
-			"missing database",
-			"missing database",
-		)
-	}
-	if username == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("username"),
-			"missing username",
-			"missing username",
-		)
-	}
-	if resp.Diagnostics.HasError() {
-		return
+	if !config.SSLMode.IsNull() {
+		sslmode = config.SSLMode.ValueString()
 	}
 
-	// Example client configuration for data sources and resources
-	url := fmt.Sprintf("gcppostgres://%s@%s/%s/%s/%s", username, projectID, region, instance, database)
 	var dbgetter F
-	if impersonateServiceAccount != "" {
-		dbgetter = GetDatabaseGetterWithImpersonation(url, impersonateServiceAccount)
+
+	// Check if we should use standard PostgreSQL connection
+	if host != "" {
+		// Use standard PostgreSQL connection
+		url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+			username, password, host, port, database, sslmode)
+		dbgetter = GetStandardPostgresGetter(url)
 	} else {
-		dbgetter = GetDatabaseGetter(url)
+		// Continue with Cloud SQL connection
+		if projectID == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("project_id"),
+				"missing project_id",
+				"project_id is required for Cloud SQL connection",
+			)
+		}
+		if region == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("region"),
+				"missing region",
+				"region is required for Cloud SQL connection",
+			)
+		}
+		if instance == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("instance"),
+				"missing instance",
+				"instance is required for Cloud SQL connection",
+			)
+		}
+		if database == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("database"),
+				"missing database",
+				"database is required for Cloud SQL connection",
+			)
+		}
+		if username == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("username"),
+				"missing username",
+				"username is required for Cloud SQL connection",
+			)
+		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		url := fmt.Sprintf("gcppostgres://%s@%s/%s/%s/%s", username, projectID, region, instance, database)
+		if impersonateServiceAccount != "" {
+			dbgetter = GetDatabaseGetterWithImpersonation(url, impersonateServiceAccount)
+		} else {
+			dbgetter = GetDatabaseGetter(url)
+		}
 	}
+
 	resp.DataSourceData = dbgetter
 	resp.ResourceData = dbgetter
 }

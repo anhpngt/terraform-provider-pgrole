@@ -3,12 +3,12 @@
 page_title: "pgrole Provider"
 subcategory: ""
 description: |-
-  A provider for managing roles' attributes inside a Cloud SQL PostgreSQL instance.
+  A provider for managing roles' attributes inside a PostgreSQL instance (Cloud SQL or standard).
 ---
 
 # pgrole Provider
 
-A provider for managing roles' attributes inside a Cloud SQL PostgreSQL instance.
+A provider for managing roles' attributes inside a PostgreSQL instance (Cloud SQL or standard).
 
 ## Example Usage
 
@@ -26,17 +26,21 @@ provider "pgrole" {
 
 ### Required
 
-- `instance` (String) The name of the Cloud SQL instance.
-- `project_id` (String) The Google Cloud project ID of the Cloud SQL instance.
-- `region` (String) The region of the Cloud SQL instance.
 - `username` (String) Username for the server connection.
 
 ### Optional
 
-- `database` (String) The name of the database to connect to. Default to postgres
+- `database` (String) The name of the database to connect to. Defaults to postgres.
+- `host` (String) The host of the PostgreSQL server. Required if using standard PostgreSQL.
 - `impersonate_service_account` (String) The service account to impersonate when connecting to the database.
 
   When using this option, you must ensure:
 
     * The impersonated service account has sufficient permissions to connect to the database
     * The principal (that is impersonating the service account) has sufficient permissions to impersonate the service account
+- `instance` (String) The name of the Cloud SQL instance. Required if using Cloud SQL.
+- `password` (String, Sensitive) Password for the server connection. Required if using standard PostgreSQL.
+- `port` (Number) The port of the PostgreSQL server. Default is 5432.
+- `project_id` (String) The Google Cloud project ID of the Cloud SQL instance. Required if using Cloud SQL.
+- `region` (String) The region of the Cloud SQL instance. Required if using Cloud SQL.
+- `sslmode` (String) SSL mode for the server connection. Default is 'disable'.
