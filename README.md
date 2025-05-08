@@ -35,34 +35,27 @@ and run it locally (probably against your own infrastructure) using [dev_overrid
 1. Build this provider (after updating it to your needs):
 
     ```sh
-    go install ./
+    ./build.sh
     ```
 
-2. The above command should install `terraform-provider-pgrole` to your `$GOPATH/bin`. Check with:
-
-    ```sh
-    # cd to the bin directory
-    $ cd $(go env GOPATH)/bin
-    # run the plugin binary to ensure it built correctly
-    $ ./terraform-provider-pgrole
-    This binary is a plugin. These are not meant to be executed directly.
-    Please execute the program that consumes these plugins, which will
-    load any plugins automatically
-    ```
-
-3. Create a `.terraformrc` file in your HOME directory with the following content:
+2. Create a `.terraformrc` file in your HOME directory with the following content:
 
     ```
+    disable_checkpoint = true
+    plugin_cache_dir   = "/home/USER/.terraform.d/bin" #or anything else
+
     provider_installation {
-        dev_overrides {
-            "anhpngt/pgrole" = "/home/USER/go/bin"
-        }
-
-        direct {}
+    filesystem_mirror {
+        path    = "/home/USER/.terraform.d/plugins"
+        include = ["registry.terraform.io/*/*"]
+    }
+    direct {
+        exclude = ["registry.terraform.io/*/*"]
+    }
     }
     ```
 
-4. Now you can run terraform to use the locally-developed provider.
+3. Now you can run terraform to use the locally-developed provider.
 
     ```sh
     cd your/terraform/repo
