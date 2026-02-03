@@ -302,6 +302,7 @@ func (p *pgroleProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewConnectionLimitResource,
 		NewReplicationResource,
 		NewAuditResource,
+		NewSecurityLabelResource,
 	}
 }
 

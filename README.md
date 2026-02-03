@@ -4,9 +4,21 @@ This provider allows to manage settings and configurations of existing roles (cr
 
 This aims at using Google's [Cloud SQL for PostgreSQL](https://cloud.google.com/sql/docs/postgres), where [google_sql_user](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/sql_user) is used to create roles in PostgreSQL but further configurations for those roles are not supported innately.
 
+## Features
+
+This provider supports managing the following role configurations:
+
+- **Audit settings** - Configure pgAudit logging for roles
+- **Bypass RLS** - Manage row-level security bypass permissions
+- **Connection limits** - Set maximum concurrent connections per role
+- **Replication** - Configure replication permissions
+- **Statement timeout** - Set query execution timeout limits
+- **Security labels** - Manage PostgreSQL Anonymizer security labels for dynamic masking
+
 ## Quick Starts
 
 * [Provider Documentation](https://registry.terraform.io/providers/anhpngt/pgrole/latest/docs)
+* [Dynamic Masking Complete Example](examples/dynamic_masking_complete.md)
 
 ## Requirements
 
