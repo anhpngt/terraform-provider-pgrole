@@ -151,7 +151,8 @@ AND objname = $1`
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// No security label found, set to empty
-		state.Label = ""
+		resp.State.RemoveResource(ctx)
+		return
 	case err == nil:
 		if label.Valid {
 			state.Label = label.String
@@ -191,7 +192,7 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Update resource state with updated values
 	var sqlstr string
-	if plan.Label == "" {
+	if plan.Label == "NULL" {
 		sqlstr = sqlRemoveSecurityLabel(plan.Role)
 	} else {
 		sqlstr = sqlSetSecurityLabel(plan.Role, plan.Label)
@@ -263,7 +264,7 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 }
 
 func (r *securityLabelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import state by role name, the label will be read from the database
+	resp.State.SetAttribute(ctx, path.Root("label"), "MASKED")
 	resource.ImportStatePassthroughID(ctx, path.Root("role"), req, resp)
 }
 

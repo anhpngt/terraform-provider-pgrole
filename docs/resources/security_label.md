@@ -25,7 +25,7 @@ resource "pgrole_security_label" "custom" {
 The following arguments are supported:
 
 * `role` - (Required) Name of the PostgreSQL role to apply the security label to.
-* `label` - (Required) Security label value. Use `"MASKED"` to enable dynamic masking for the role, or `null` to remove the label.
+* `label` - (Required) Security label value. Use `"MASKED"` to enable dynamic masking for the role. Destroying this resource will remove the associated security label.
 
 ## Attribute Reference
 
