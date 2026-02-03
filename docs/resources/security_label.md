@@ -13,12 +13,6 @@ resource "pgrole_security_label" "app_user" {
   label = "MASKED"
 }
 
-# Remove masking from a role (unmask)
-resource "pgrole_security_label" "admin_user" {
-  role  = "admin_user"
-  label = null
-}
-
 # Custom security label
 resource "pgrole_security_label" "custom" {
   role  = "special_user"
