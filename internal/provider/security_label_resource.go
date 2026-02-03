@@ -258,7 +258,6 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 }
 
 func (r *securityLabelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.State.SetAttribute(ctx, path.Root("label"), "MASKED")
 	resource.ImportStatePassthroughID(ctx, path.Root("role"), req, resp)
 }
 
