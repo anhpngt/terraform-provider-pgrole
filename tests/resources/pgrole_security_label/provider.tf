@@ -1,7 +1,8 @@
 terraform {
   required_providers {
     pgrole = {
-      source = "registry.terraform.io/manabie-com/pgrole"
+      source  = "local/pgrole"
+      version = "1.0.0"
     }
   }
 }

@@ -191,7 +191,7 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Update resource state with updated values
 	var sqlstr string
-	if plan.Label == "" || strings.ToUpper(plan.Label) == "NULL" {
+	if plan.Label == "" {
 		sqlstr = sqlRemoveSecurityLabel(plan.Role)
 		plan.Label = ""
 	} else {
@@ -270,7 +270,8 @@ func (r *securityLabelResource) ImportState(ctx context.Context, req resource.Im
 
 // sqlSetSecurityLabel generates SQL to set a security label for a role
 func sqlSetSecurityLabel(role string, label string) string {
-	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS '%s';", role, label)
+	escapedLabel := strings.ReplaceAll(label, "'", "''")
+	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS '%s';", role, escapedLabel)
 }
 
 // sqlRemoveSecurityLabel generates SQL to remove a security label for a role
