@@ -193,7 +193,6 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 	var sqlstr string
 	if plan.Label == "" {
 		sqlstr = sqlRemoveSecurityLabel(plan.Role)
-		plan.Label = ""
 	} else {
 		sqlstr = sqlSetSecurityLabel(plan.Role, plan.Label)
 	}
