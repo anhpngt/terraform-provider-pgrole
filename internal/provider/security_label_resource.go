@@ -10,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -46,16 +45,15 @@ func (r *securityLabelResource) Schema(_ context.Context, req resource.SchemaReq
 			},
 			"label": schema.StringAttribute{
 				Description: "Security label value. Use 'MASKED' to enable dynamic masking for the role, or NULL to remove the label.",
-				Optional:    true,
-				Computed:    true,
+				Required:    true,
 			},
 		},
 	}
 }
 
 type securityLabelModel struct {
-	Role  types.String `tfsdk:"role"`
-	Label types.String `tfsdk:"label"`
+	Role  string `tfsdk:"role"`
+	Label string `tfsdk:"label"`
 }
 
 // Configure adds the provider configured client to the resource.
@@ -88,14 +86,7 @@ func (r *securityLabelResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	// Create the resource
-	var sqlstr string
-	if plan.Label.IsNull() || plan.Label.ValueString() == "" {
-		// If no label is specified, default to MASKED
-		plan.Label = types.StringValue("MASKED")
-		sqlstr = sqlSetSecurityLabel(plan.Role.ValueString(), plan.Label.ValueString())
-	} else {
-		sqlstr = sqlSetSecurityLabel(plan.Role.ValueString(), plan.Label.ValueString())
-	}
+	sqlstr := sqlSetSecurityLabel(plan.Role, plan.Label)
 
 	db, err := r.getDB(ctx)
 	if err != nil {
@@ -116,8 +107,8 @@ func (r *securityLabelResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	tflog.Info(ctx, "Created security label for role", map[string]any{
-		"role":  plan.Role.ValueString(),
-		"label": plan.Label.ValueString(),
+		"role":  plan.Role,
+		"label": plan.Label,
 	})
 
 	// Set state to fully populated data
@@ -156,28 +147,28 @@ WHERE objtype = 'role'
 AND provider = 'anon' 
 AND objname = $1`
 
-	err = db.QueryRowContext(ctx, sqlstr, state.Role.ValueString()).Scan(&label)
+	err = db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&label)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// No security label found, set to null
-		state.Label = types.StringNull()
+		// No security label found, set to empty
+		state.Label = ""
 	case err == nil:
 		if label.Valid {
-			state.Label = types.StringValue(label.String)
+			state.Label = label.String
 		} else {
-			state.Label = types.StringNull()
+			state.Label = ""
 		}
 	default:
 		resp.Diagnostics.AddError(
 			"Failed to query security label",
-			fmt.Sprintf("Failed to query security label for role %s: %s", state.Role.ValueString(), err),
+			fmt.Sprintf("Failed to query security label for role %s: %s", state.Role, err),
 		)
 		return
 	}
 
 	tflog.Info(ctx, "Read security label for role", map[string]any{
-		"role":  state.Role.ValueString(),
-		"label": state.Label.ValueString(),
+		"role":  state.Role,
+		"label": state.Label,
 	})
 
 	// Set refreshed state
@@ -200,11 +191,11 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Update resource state with updated values
 	var sqlstr string
-	if plan.Label.IsNull() || strings.ToUpper(plan.Label.ValueString()) == "NULL" {
-		sqlstr = sqlRemoveSecurityLabel(plan.Role.ValueString())
-		plan.Label = types.StringNull()
+	if plan.Label == "" || strings.ToUpper(plan.Label) == "NULL" {
+		sqlstr = sqlRemoveSecurityLabel(plan.Role)
+		plan.Label = ""
 	} else {
-		sqlstr = sqlSetSecurityLabel(plan.Role.ValueString(), plan.Label.ValueString())
+		sqlstr = sqlSetSecurityLabel(plan.Role, plan.Label)
 	}
 
 	db, err := r.getDB(ctx)
@@ -226,8 +217,8 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 	}
 
 	tflog.Info(ctx, "Updated security label for role", map[string]any{
-		"role":  plan.Role.ValueString(),
-		"label": plan.Label.ValueString(),
+		"role":  plan.Role,
+		"label": plan.Label,
 	})
 
 	diags = resp.State.Set(ctx, plan)
@@ -248,7 +239,7 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 
 	// Delete the resource by removing the security label
-	sqlstr := sqlRemoveSecurityLabel(state.Role.ValueString())
+	sqlstr := sqlRemoveSecurityLabel(state.Role)
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -268,7 +259,7 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 
 	tflog.Info(ctx, "Deleted security label for role", map[string]any{
-		"role": state.Role.ValueString(),
+		"role": state.Role,
 	})
 }
 
@@ -279,10 +270,10 @@ func (r *securityLabelResource) ImportState(ctx context.Context, req resource.Im
 
 // sqlSetSecurityLabel generates SQL to set a security label for a role
 func sqlSetSecurityLabel(role string, label string) string {
-	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS '%s';", role, label)
+	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS '%s';", role, label)
 }
 
 // sqlRemoveSecurityLabel generates SQL to remove a security label for a role
 func sqlRemoveSecurityLabel(role string) string {
-	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS NULL;", role)
+	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS NULL;", role)
 }

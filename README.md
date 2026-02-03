@@ -18,7 +18,6 @@ This provider supports managing the following role configurations:
 ## Quick Starts
 
 * [Provider Documentation](https://registry.terraform.io/providers/anhpngt/pgrole/latest/docs)
-* [Dynamic Masking Complete Example](examples/dynamic_masking_complete.md)
 
 ## Requirements
 
