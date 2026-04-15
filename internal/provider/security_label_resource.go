@@ -37,7 +37,34 @@ func (r *securityLabelResource) Metadata(_ context.Context, req resource.Metadat
 // Schema defines the schema for the resource.
 func (r *securityLabelResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manage PostgreSQL Anonymizer security labels for roles to enable dynamic masking. See [PostgreSQL Anonymizer Dynamic Masking](https://postgresql-anonymizer.readthedocs.io/en/latest/dynamic_masking/) documentation.",
+		MarkdownDescription: `Manages PostgreSQL Anonymizer security labels for roles to enable dynamic masking.
+
+This resource allows you to apply security labels to PostgreSQL roles using the PostgreSQL Anonymizer extension. Security labels are used to mark roles as "MASKED" for dynamic masking purposes, where sensitive data is automatically masked when accessed by those roles.
+
+## Prerequisites
+
+Before using this resource, ensure that:
+
+1. The PostgreSQL Anonymizer extension is installed and enabled in your database
+2. Dynamic masking is enabled: ` + "`" + `ALTER DATABASE your_db SET anon.transparent_dynamic_masking TO true;` + "`" + `
+3. The provider has sufficient privileges to manage security labels
+
+## Dynamic Masking Workflow
+
+1. **Enable PostgreSQL Anonymizer**: Install and enable the extension
+2. **Set up masking rules**: Define masking rules for sensitive columns
+3. **Create masked roles**: Use this resource to mark roles as "MASKED"
+4. **Grant appropriate permissions**: Ensure masked roles have read access to the data
+
+For more information, see the [PostgreSQL Anonymizer Dynamic Masking documentation](https://postgresql-anonymizer.readthedocs.io/en/latest/dynamic_masking/).
+
+## SQL Operations
+
+This resource performs the following SQL operations:
+
+* **Create/Update**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';` + "`" + `
+* **Delete/Null**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS NULL;` + "`" + `
+* **Read**: Queries ` + "`pg_seclabels`" + ` system catalog for existing labels`,
 		Attributes: map[string]schema.Attribute{
 			"role": schema.StringAttribute{
 				Description: "Name of the role to apply the security label to.",
