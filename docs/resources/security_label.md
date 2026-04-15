@@ -68,6 +68,8 @@ resource "pgrole_security_label" "masked_user" {
 
 Import is supported using the following syntax:
 
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
 ```shell
 # Import an existing security label for a role
 terraform import pgrole_security_label.masked_user "app_user"
