@@ -1,8 +1,8 @@
 module github.com/anhpngt/terraform-provider-pgrole
 
-go 1.24
+go 1.26
 
-toolchain go1.24.5
+toolchain go1.26.2
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.15.0
