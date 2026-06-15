@@ -11,6 +11,7 @@ This provider supports managing the following role configurations:
 - **Audit settings** - Configure pgAudit logging for roles
 - **Bypass RLS** - Manage row-level security bypass permissions
 - **Connection limits** - Set maximum concurrent connections per role
+- **Create role** - Manage permission to create new roles
 - **Replication** - Configure replication permissions
 - **Statement timeout** - Set query execution timeout limits
 - **Security labels** - Manage PostgreSQL Anonymizer security labels for dynamic masking
