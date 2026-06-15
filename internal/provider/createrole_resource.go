@@ -66,6 +66,7 @@ func (r *createRoleResource) Configure(_ context.Context, req resource.Configure
 			"Unexpected Data Source Configure Type",
 			fmt.Sprintf("Expected provider.F, got %T", req.ProviderData),
 		)
+		return
 	}
 
 	r.getDB = client
