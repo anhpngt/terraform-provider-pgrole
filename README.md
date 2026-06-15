@@ -74,3 +74,16 @@ and run it locally (probably against your own infrastructure) using [dev_overrid
     terraform init
     terraform plan
     ```
+
+## Releasing
+
+To cut a release:
+
+```sh
+git checkout main
+git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Use [semantic versioning](https://semver.org/) for the tag (e.g. `v1.2.3`). No release branch or manual workflow dispatch is needed.
