@@ -301,6 +301,7 @@ func (p *pgroleProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewStatementTimeoutResource,
 		NewConnectionLimitResource,
 		NewReplicationResource,
+		NewCreateRoleResource,
 		NewAuditResource,
 		NewSecurityLabelResource,
 	}
