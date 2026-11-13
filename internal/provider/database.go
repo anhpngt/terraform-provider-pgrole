@@ -51,6 +51,13 @@ func GetDatabaseGetterWithImpersonation(dsn string, targetServiceAccountEmail st
 	}
 }
 
+func withSSLRootCert(dsn, sslrootcert string) string {
+	if sslrootcert == "" {
+		return dsn
+	}
+	return dsn + "&sslrootcert=" + url.QueryEscape(sslrootcert)
+}
+
 // GetStandardPostgresGetter returns a function that can be used to get a standard PostgreSQL connection.
 //
 // Remember to call db.Close() to cleanup the connection.

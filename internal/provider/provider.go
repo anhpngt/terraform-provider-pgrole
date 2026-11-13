@@ -37,10 +37,11 @@ type pgroleModel struct {
 	ImpersonateServiceAccount types.String `tfsdk:"impersonate_service_account"`
 
 	// Standard PostgreSQL connection parameters
-	Host     types.String `tfsdk:"host"`
-	Port     types.Int64  `tfsdk:"port"`
-	Password types.String `tfsdk:"password"`
-	SSLMode  types.String `tfsdk:"sslmode"`
+	Host        types.String `tfsdk:"host"`
+	Port        types.Int64  `tfsdk:"port"`
+	Password    types.String `tfsdk:"password"`
+	SSLMode     types.String `tfsdk:"sslmode"`
+	SSLRootCert types.String `tfsdk:"sslrootcert"`
 }
 
 func (p *pgroleProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -101,6 +102,10 @@ func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 			},
 			"sslmode": schema.StringAttribute{
 				Description: "SSL mode for the server connection. Default is 'disable'.",
+				Optional:    true,
+			},
+			"sslrootcert": schema.StringAttribute{
+				Description: "Path to a file with the root CA certificate(s) used to verify the server certificate when sslmode is 'verify-ca' or 'verify-full' (with 'require', an existing file makes it behave as 'verify-ca'). When unset, the system root CAs are used. Only used with standard PostgreSQL.",
 				Optional:    true,
 			},
 		},
@@ -187,6 +192,13 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 			"unknown sslmode",
 		)
 	}
+	if config.SSLRootCert.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("sslrootcert"),
+			"unknown sslrootcert",
+			"unknown sslrootcert",
+		)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -202,6 +214,7 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	port := int64(5432) // Default PostgreSQL port
 	password := ""
 	sslmode := "disable" // Default to disable SSL
+	sslrootcert := ""
 
 	if !config.ProjectID.IsNull() {
 		projectID = config.ProjectID.ValueString()
@@ -233,6 +246,9 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	if !config.SSLMode.IsNull() {
 		sslmode = config.SSLMode.ValueString()
 	}
+	if !config.SSLRootCert.IsNull() {
+		sslrootcert = config.SSLRootCert.ValueString()
+	}
 
 	var dbgetter F
 
@@ -241,7 +257,7 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		// Use standard PostgreSQL connection
 		url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 			username, password, host, port, database, sslmode)
-		dbgetter = GetStandardPostgresGetter(url)
+		dbgetter = GetStandardPostgresGetter(withSSLRootCert(url, sslrootcert))
 	} else {
 		// Continue with Cloud SQL connection
 		if projectID == "" {
