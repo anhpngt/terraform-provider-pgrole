@@ -236,6 +236,7 @@ func TestPgroleProvider_Configure_UnknownValues(t *testing.T) {
 		{"port", tftypes.Number},
 		{"password", tftypes.String},
 		{"sslmode", tftypes.String},
+		{"sslrootcert", tftypes.String},
 	}
 
 	for _, tc := range testcases {

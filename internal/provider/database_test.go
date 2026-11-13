@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,4 +137,26 @@ func TestGetStandardPostgresGetter_RedactsRawURLError(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "FAKE-pw")
 	assert.Contains(t, err.Error(), "invalid connection URL")
+}
+
+func TestWithSSLRootCert(t *testing.T) {
+	t.Parallel()
+
+	dsn := standardPostgresDSN("postgres", "postgres", "localhost", 5432, "postgres", "verify-full")
+
+	assert.Equal(t, dsn, withSSLRootCert(dsn, ""))
+
+	for _, sslrootcert := range []string{
+		"/etc/ssl/certs/root-ca.pem",
+		"./ca.pem",
+		"/path with spaces/root&ca=1.pem",
+	} {
+		got := withSSLRootCert(dsn, sslrootcert)
+		assert.True(t, strings.HasPrefix(got, dsn+"&sslrootcert="), got)
+
+		opts, err := pq.ParseURL(got)
+		require.NoError(t, err)
+		assert.Contains(t, opts, "sslrootcert='"+sslrootcert+"'")
+		assert.Contains(t, opts, "sslmode='verify-full'")
+	}
 }
