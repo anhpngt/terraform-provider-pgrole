@@ -3,8 +3,12 @@ package provider
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
+	"strings"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"gocloud.dev/gcp"
@@ -51,6 +55,25 @@ func GetDatabaseGetterWithImpersonation(dsn string, targetServiceAccountEmail st
 	}
 }
 
+func standardPostgresDSN(username, password, host string, port int64, database, sslmode string) string {
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(username, password),
+		Host:     net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), strconv.FormatInt(port, 10)),
+		Path:     "/" + database,
+		RawQuery: url.Values{"sslmode": {sslmode}}.Encode(),
+	}
+	return u.String()
+}
+
+func redactURLError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("invalid connection URL: %w", urlErr.Err)
+	}
+	return err
+}
+
 // GetStandardPostgresGetter returns a function that can be used to get a standard PostgreSQL connection.
 //
 // Remember to call db.Close() to cleanup the connection.
@@ -64,7 +87,7 @@ func GetStandardPostgresGetter(dsn string) F {
 		// Test the connection
 		if err := db.PingContext(ctx); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("error connecting to database: %s", err)
+			return nil, fmt.Errorf("error connecting to database: %s", redactURLError(err))
 		}
 
 		return db, nil
