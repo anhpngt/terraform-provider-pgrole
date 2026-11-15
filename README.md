@@ -4,6 +4,8 @@ This provider allows to manage settings and configurations of existing roles (cr
 
 This aims at using Google's [Cloud SQL for PostgreSQL](https://cloud.google.com/sql/docs/postgres), where [google_sql_user](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/sql_user) is used to create roles in PostgreSQL but further configurations for those roles are not supported innately.
 
+Standard PostgreSQL servers and [AWS RDS for PostgreSQL](https://aws.amazon.com/rds/postgresql/) (including [IAM database authentication](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.html)) are also supported.
+
 ## Features
 
 This provider supports managing the following role configurations:

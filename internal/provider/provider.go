@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -41,6 +45,12 @@ type pgroleModel struct {
 	Port     types.Int64  `tfsdk:"port"`
 	Password types.String `tfsdk:"password"`
 	SSLMode  types.String `tfsdk:"sslmode"`
+
+	// AWS RDS IAM authentication parameters
+	AWSRDSIAMAuth            types.Bool   `tfsdk:"aws_rds_iam_auth"`
+	AWSRDSIAMRegion          types.String `tfsdk:"aws_rds_iam_region"`
+	AWSRDSIAMProfile         types.String `tfsdk:"aws_rds_iam_profile"`
+	AWSRDSIAMProviderRoleARN types.String `tfsdk:"aws_rds_iam_provider_role_arn"`
 }
 
 func (p *pgroleProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -50,7 +60,7 @@ func (p *pgroleProvider) Metadata(ctx context.Context, req provider.MetadataRequ
 
 func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A provider for managing roles' attributes inside a PostgreSQL instance (Cloud SQL or standard).",
+		Description: "A provider for managing roles' attributes inside a PostgreSQL instance (Cloud SQL, AWS RDS, or standard).",
 		Attributes: map[string]schema.Attribute{
 			// Cloud SQL specific parameters
 			"project_id": schema.StringAttribute{
@@ -100,7 +110,30 @@ func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 				Sensitive:   true,
 			},
 			"sslmode": schema.StringAttribute{
-				Description: "SSL mode for the server connection. Default is 'disable'.",
+				Description: "SSL mode for the server connection. Default is 'disable', or 'require' when aws_rds_iam_auth is enabled.",
+				Optional:    true,
+			},
+
+			// AWS RDS IAM authentication parameters
+			"aws_rds_iam_auth": schema.BoolAttribute{
+				MarkdownDescription: `Use AWS RDS IAM authentication instead of a password. Requires ` + "`host`" + ` and conflicts with ` + "`password`" + `.
+
+  When using this option, you must ensure:
+
+    * The database user has been granted the ` + "`rds_iam`" + ` role
+    * The AWS principal has the ` + "`rds-db:connect`" + ` permission for the database user`,
+				Optional: true,
+			},
+			"aws_rds_iam_region": schema.StringAttribute{
+				Description: "The AWS region of the RDS instance, used to sign the IAM auth token. Defaults to the region from the AWS SDK configuration (e.g. AWS_REGION).",
+				Optional:    true,
+			},
+			"aws_rds_iam_profile": schema.StringAttribute{
+				Description: "The AWS shared config profile to use for RDS IAM authentication.",
+				Optional:    true,
+			},
+			"aws_rds_iam_provider_role_arn": schema.StringAttribute{
+				Description: "The ARN of an AWS IAM role to assume before generating the RDS IAM auth token.",
 				Optional:    true,
 			},
 		},
@@ -187,6 +220,34 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 			"unknown sslmode",
 		)
 	}
+	if config.AWSRDSIAMAuth.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("aws_rds_iam_auth"),
+			"unknown aws_rds_iam_auth",
+			"unknown aws_rds_iam_auth",
+		)
+	}
+	if config.AWSRDSIAMRegion.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("aws_rds_iam_region"),
+			"unknown aws_rds_iam_region",
+			"unknown aws_rds_iam_region",
+		)
+	}
+	if config.AWSRDSIAMProfile.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("aws_rds_iam_profile"),
+			"unknown aws_rds_iam_profile",
+			"unknown aws_rds_iam_profile",
+		)
+	}
+	if config.AWSRDSIAMProviderRoleARN.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("aws_rds_iam_provider_role_arn"),
+			"unknown aws_rds_iam_provider_role_arn",
+			"unknown aws_rds_iam_provider_role_arn",
+		)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -202,6 +263,10 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	port := int64(5432) // Default PostgreSQL port
 	password := ""
 	sslmode := "disable" // Default to disable SSL
+	awsRDSIAMAuth := false
+	awsRDSIAMRegion := ""
+	awsRDSIAMProfile := ""
+	awsRDSIAMProviderRoleARN := ""
 
 	if !config.ProjectID.IsNull() {
 		projectID = config.ProjectID.ValueString()
@@ -230,18 +295,79 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	if !config.Password.IsNull() {
 		password = config.Password.ValueString()
 	}
+	if !config.AWSRDSIAMAuth.IsNull() {
+		awsRDSIAMAuth = config.AWSRDSIAMAuth.ValueBool()
+	}
+	if !config.AWSRDSIAMRegion.IsNull() {
+		awsRDSIAMRegion = config.AWSRDSIAMRegion.ValueString()
+	}
+	if !config.AWSRDSIAMProfile.IsNull() {
+		awsRDSIAMProfile = config.AWSRDSIAMProfile.ValueString()
+	}
+	if !config.AWSRDSIAMProviderRoleARN.IsNull() {
+		awsRDSIAMProviderRoleARN = config.AWSRDSIAMProviderRoleARN.ValueString()
+	}
 	if !config.SSLMode.IsNull() {
 		sslmode = config.SSLMode.ValueString()
+	} else if awsRDSIAMAuth {
+		sslmode = "require" // RDS IAM authentication requires SSL
 	}
 
 	var dbgetter F
 
-	// Check if we should use standard PostgreSQL connection
-	if host != "" {
+	if awsRDSIAMAuth {
+		// Use AWS RDS IAM authentication
+		if host == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("host"),
+				"missing host",
+				"host is required when aws_rds_iam_auth is enabled",
+			)
+		}
+		if password != "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("password"),
+				"conflicting password",
+				"password must not be set when aws_rds_iam_auth is enabled",
+			)
+		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		var opts []func(*awsconfig.LoadOptions) error
+		if awsRDSIAMRegion != "" {
+			opts = append(opts, awsconfig.WithRegion(awsRDSIAMRegion))
+		}
+		if awsRDSIAMProfile != "" {
+			opts = append(opts, awsconfig.WithSharedConfigProfile(awsRDSIAMProfile))
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"error loading AWS configuration",
+				err.Error(),
+			)
+			return
+		}
+		if awsCfg.Region == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("aws_rds_iam_region"),
+				"missing aws_rds_iam_region",
+				"aws_rds_iam_region is required when no region is set in the AWS configuration",
+			)
+			return
+		}
+		if awsRDSIAMProviderRoleARN != "" {
+			awsCfg.Credentials = aws.NewCredentialsCache(
+				stscreds.NewAssumeRoleProvider(sts.NewFromConfig(awsCfg), awsRDSIAMProviderRoleARN),
+			)
+		}
+
+		dbgetter = GetRDSIAMPostgresGetter(awsCfg.Credentials, awsCfg.Region, host, port, database, username, sslmode)
+	} else if host != "" {
 		// Use standard PostgreSQL connection
-		url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-			username, password, host, port, database, sslmode)
-		dbgetter = GetStandardPostgresGetter(url)
+		dbgetter = GetStandardPostgresGetter(buildPostgresURL(username, password, host, port, database, sslmode))
 	} else {
 		// Continue with Cloud SQL connection
 		if projectID == "" {
