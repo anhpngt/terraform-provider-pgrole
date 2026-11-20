@@ -93,7 +93,7 @@ func (r *connectionLimitResource) Create(ctx context.Context, req resource.Creat
 		return
 	}
 	defer db.Close()
-	if _, err = db.ExecContext(ctx, sqlstr); err != nil {
+	if err = execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -129,6 +129,10 @@ func (r *connectionLimitResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 	defer db.Close()
+
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
 
 	var connLimit int32
 	if err := db.QueryRowContext(ctx, "SELECT rolconnlimit FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&connLimit); err != nil {
@@ -172,7 +176,7 @@ func (r *connectionLimitResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -208,7 +212,7 @@ func (r *connectionLimitResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

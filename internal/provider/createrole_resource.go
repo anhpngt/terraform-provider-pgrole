@@ -99,7 +99,7 @@ func (r *createRoleResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 	defer db.Close()
-	if _, err = db.ExecContext(ctx, sqlstr); err != nil {
+	if err = execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -135,6 +135,10 @@ func (r *createRoleResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 	defer db.Close()
+
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
 
 	var enabled bool
 	if err := db.QueryRowContext(ctx, "SELECT rolcreaterole FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&enabled); err != nil {
@@ -183,7 +187,7 @@ func (r *createRoleResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -219,7 +223,7 @@ func (r *createRoleResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

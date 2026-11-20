@@ -41,6 +41,15 @@ To compile the provider, run `make install`. This will build the provider and pu
 
 To generate or update documentation, run `make generate`.
 
+Some tests run against a real PostgreSQL server, as a superuser (`PGROLE_TEST_USERNAME` and `PGROLE_TEST_PASSWORD`, both `postgres` by default), and are skipped unless `PGROLE_TEST_HOST` is set. Add `TF_ACC=1` to also run the ones that drive the provider through Terraform:
+
+```sh
+PGROLE_TEST_HOST=127.0.0.1 PGROLE_TEST_PORT=5432 TF_ACC=1 go test ./internal/provider/ \
+  -run 'TestRoleSettings|TestSettingsOfOneRoleAppliedInParallel|TestAccRoleDroppedOutsideTerraform'
+```
+
+The security label cases need the `anon` extension to be loaded and are skipped without it.
+
 Testing are still under development for now. However, you can compile this provider
 and run it locally (probably against your own infrastructure) using [dev_overrides](https://developer.hashicorp.com/terraform/cli/config/config-file#development-overrides-for-provider-developers):
 
