@@ -134,6 +134,10 @@ func (r *auditResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 	defer db.Close()
 
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
+
 	var auditLogOption string
 	sqlstr := `SELECT setting
 FROM (
@@ -231,7 +235,7 @@ func (r *auditResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 	defer db.Close()
-	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

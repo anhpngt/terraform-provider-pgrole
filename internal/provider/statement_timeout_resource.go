@@ -143,6 +143,10 @@ func (r *statementTimeoutResource) Read(ctx context.Context, req resource.ReadRe
 	}
 	defer db.Close()
 
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
+
 	var timeoutSetting string
 	sqlstr := `SELECT setting
 FROM (
@@ -231,7 +235,7 @@ func (r *statementTimeoutResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 	defer db.Close()
-	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

@@ -136,6 +136,10 @@ func (r *bypassrlsResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 	defer db.Close()
 
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
+
 	var enabled bool
 	if err := db.QueryRowContext(ctx, "SELECT rolbypassrls FROM pg_roles WHERE rolname = $1;", state.Role).Scan(&enabled); err != nil {
 		resp.Diagnostics.AddError(
@@ -224,7 +228,7 @@ func (r *bypassrlsResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 	defer db.Close()
-	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

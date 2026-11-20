@@ -3,7 +3,11 @@ package provider
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // roleLocks holds one lock per role name.
@@ -29,4 +33,58 @@ func execForRole(ctx context.Context, db *sql.DB, role string, sqlstr string) er
 
 	_, err := db.ExecContext(ctx, sqlstr)
 	return err
+}
+
+// roleExists reports whether a role with the given name exists.
+func roleExists(ctx context.Context, db *sql.DB, role string) (bool, error) {
+	var exists bool
+	err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1);", role).Scan(&exists)
+	return exists, err
+}
+
+// removeIfRoleGone removes the resource being read from the state when its role no longer exists,
+// and reports whether Read is done (the resource was removed, or the check itself failed).
+//
+// The resources of this provider are settings of a role that something else creates and drops.
+// Dropping the role drops its settings too, so there is nothing left to read, update or delete:
+// without this, Terraform keeps planning changes that can only fail with "role does not exist".
+func removeIfRoleGone(ctx context.Context, db *sql.DB, role string, resp *resource.ReadResponse) bool {
+	exists, err := roleExists(ctx, db, role)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to check role",
+			fmt.Sprintf("Failed to check whether role %s exists: %s", role, err),
+		)
+		return true
+	}
+	if exists {
+		return false
+	}
+
+	tflog.Warn(ctx, "Role no longer exists, removing resource from state", map[string]any{
+		"role": role,
+	})
+	resp.State.RemoveResource(ctx)
+	return true
+}
+
+// undoRoleSetting runs the statement that takes a setting off a role when its resource is deleted.
+//
+// A failure is not an error when the role no longer exists: the setting went away with the role,
+// which is the state that Delete is asked to reach. This covers a role dropped after the plan was
+// made, where Read could not have removed the resource from the state.
+func undoRoleSetting(ctx context.Context, db *sql.DB, role string, sqlstr string) error {
+	execErr := execForRole(ctx, db, role, sqlstr)
+	if execErr == nil {
+		return nil
+	}
+
+	if exists, err := roleExists(ctx, db, role); err != nil || exists {
+		return execErr
+	}
+
+	tflog.Info(ctx, "Role no longer exists, nothing to undo", map[string]any{
+		"role": role,
+	})
+	return nil
 }

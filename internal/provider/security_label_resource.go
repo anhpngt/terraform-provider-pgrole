@@ -167,6 +167,10 @@ func (r *securityLabelResource) Read(ctx context.Context, req resource.ReadReque
 	}
 	defer db.Close()
 
+	if removeIfRoleGone(ctx, db, state.Role, resp) {
+		return
+	}
+
 	var label sql.NullString
 	sqlstr := `SELECT label 
 FROM pg_seclabels 
@@ -271,7 +275,7 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 	defer db.Close()
 
-	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
+	if err := undoRoleSetting(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
