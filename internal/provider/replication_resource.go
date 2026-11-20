@@ -98,7 +98,7 @@ func (r *replicationResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 	defer db.Close()
-	if _, err = db.ExecContext(ctx, sqlstr); err != nil {
+	if err = execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -182,7 +182,7 @@ func (r *replicationResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -218,7 +218,7 @@ func (r *replicationResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),

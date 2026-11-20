@@ -125,7 +125,7 @@ func (r *securityLabelResource) Create(ctx context.Context, req resource.CreateR
 	}
 	defer db.Close()
 
-	if _, err = db.ExecContext(ctx, sqlstr); err != nil {
+	if err = execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -229,7 +229,7 @@ func (r *securityLabelResource) Update(ctx context.Context, req resource.UpdateR
 	}
 	defer db.Close()
 
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, plan.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
@@ -271,7 +271,7 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 	defer db.Close()
 
-	if _, err := db.ExecContext(ctx, sqlstr); err != nil {
+	if err := execForRole(ctx, db, state.Role, sqlstr); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to execute SQL",
 			"Failed to execute SQL: "+err.Error(),
