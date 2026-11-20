@@ -55,3 +55,4 @@ provider "pgrole" {
 - `project_id` (String) The Google Cloud project ID of the Cloud SQL instance. Required if using Cloud SQL.
 - `region` (String) The region of the Cloud SQL instance. Required if using Cloud SQL.
 - `sslmode` (String) SSL mode for the server connection. Default is 'disable'.
+- `sslrootcert` (String) Path to a file with the root CA certificate(s) used to verify the server certificate when sslmode is 'verify-ca' or 'verify-full' (with 'require', an existing file makes it behave as 'verify-ca'). When unset, the system root CAs are used. Only used with standard PostgreSQL.
