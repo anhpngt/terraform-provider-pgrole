@@ -54,7 +54,14 @@ func newTestServer(t *testing.T) testServer {
 
 // getter connects the way the provider does, as the given user.
 func (s testServer) getter(username, password string) F {
-	return GetStandardPostgresGetter(standardPostgresDSN(username, password, s.host, s.port, "postgres", "disable"))
+	return GetStandardPostgresGetter(standardPostgresDSN(standardPostgresConfig{
+		Username: username,
+		Password: password,
+		Host:     s.host,
+		Port:     s.port,
+		Database: "postgres",
+		SSLMode:  "disable",
+	}))
 }
 
 func (s testServer) providerConfig() string {

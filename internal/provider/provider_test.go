@@ -135,6 +135,28 @@ func TestPgroleProvider_Configure(t *testing.T) {
 				"password": str("postgres"),
 			},
 		},
+		{
+			name: "standard postgres with sslrootcert",
+			attrs: map[string]tftypes.Value{
+				"host":        str("db.example.com"),
+				"username":    str("postgres"),
+				"password":    str("postgres"),
+				"sslmode":     str("verify-full"),
+				"sslrootcert": str("/etc/ssl/certs/root-ca.pem"),
+			},
+		},
+		{
+			// Cloud SQL handles the certificates itself and ignores
+			// sslmode and sslrootcert.
+			name: "cloud sql ignores sslrootcert",
+			attrs: map[string]tftypes.Value{
+				"project_id":  str("my-project"),
+				"region":      str("my-region"),
+				"instance":    str("my-instance"),
+				"username":    str("me@example.com"),
+				"sslrootcert": str("/etc/ssl/certs/root-ca.pem"),
+			},
+		},
 	}
 
 	for _, tc := range testcases {
@@ -212,6 +234,56 @@ func TestPgroleProvider_Configure_MissingCloudSQLAttributes(t *testing.T) {
 			for _, summary := range tc.unexpectedErrors {
 				assert.NotContains(t, summaries, summary)
 			}
+			assert.Nil(t, resp.ResourceData)
+		})
+	}
+}
+
+func TestPgroleProvider_Configure_SSLRootCertWithoutTLS(t *testing.T) {
+	t.Parallel()
+
+	// lib/pq ignores sslrootcert without TLS. The provider must not connect
+	// in plain text when the user expects a verified server.
+	testcases := []struct {
+		name  string
+		attrs map[string]tftypes.Value
+	}{
+		{
+			name: "sslmode not set",
+			attrs: map[string]tftypes.Value{
+				"host":        str("db.example.com"),
+				"username":    str("postgres"),
+				"sslrootcert": str("/etc/ssl/certs/root-ca.pem"),
+			},
+		},
+		{
+			name: "sslmode disable",
+			attrs: map[string]tftypes.Value{
+				"host":        str("db.example.com"),
+				"username":    str("postgres"),
+				"sslmode":     str("disable"),
+				"sslrootcert": str("/etc/ssl/certs/root-ca.pem"),
+			},
+		},
+		{
+			// lib/pq drops the empty option, and PGSSLMODE would choose
+			// the mode.
+			name: "sslmode empty",
+			attrs: map[string]tftypes.Value{
+				"host":        str("db.example.com"),
+				"username":    str("postgres"),
+				"sslmode":     str(""),
+				"sslrootcert": str("/etc/ssl/certs/root-ca.pem"),
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			resp := configureProvider(t, tc.attrs)
+			assertError(t, resp.Diagnostics, "sslrootcert requires TLS")
 			assert.Nil(t, resp.ResourceData)
 		})
 	}

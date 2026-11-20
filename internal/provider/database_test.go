@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +36,14 @@ func TestStandardPostgresDSN(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			dsn := standardPostgresDSN(tc.username, tc.password, tc.host, 5432, tc.database, "verify-full")
+			dsn := standardPostgresDSN(standardPostgresConfig{
+				Username: tc.username,
+				Password: tc.password,
+				Host:     tc.host,
+				Port:     5432,
+				Database: tc.database,
+				SSLMode:  "verify-full",
+			})
 
 			u, err := url.Parse(dsn)
 			require.NoError(t, err)
@@ -47,7 +53,7 @@ func TestStandardPostgresDSN(t *testing.T) {
 			assert.Equal(t, tc.expectedHost, u.Hostname())
 			assert.Equal(t, "5432", u.Port())
 			assert.Equal(t, "/"+tc.database, u.Path)
-			assert.Equal(t, "verify-full", u.Query().Get("sslmode"))
+			assert.Equal(t, url.Values{"sslmode": {"verify-full"}}, u.Query(), "an empty sslrootcert must not be in the DSN")
 
 			// lib/pq parses the DSN on its own, so check its result too.
 			opts, err := pq.ParseURL(dsn)
@@ -71,12 +77,55 @@ func TestStandardPostgresDSN_SSLModeIsSingleParam(t *testing.T) {
 
 	const sslmode = "verify-full&sslrootcert=/x.pem"
 
-	u, err := url.Parse(standardPostgresDSN("postgres", "secret", "localhost", 5432, "postgres", sslmode))
+	u, err := url.Parse(standardPostgresDSN(standardPostgresConfig{
+		Username: "postgres",
+		Password: "secret",
+		Host:     "localhost",
+		Port:     5432,
+		Database: "postgres",
+		SSLMode:  sslmode,
+	}))
 	require.NoError(t, err)
 
 	q := u.Query()
 	assert.Len(t, q, 1, "query parameters: %v", q)
 	assert.Equal(t, sslmode, q.Get("sslmode"))
+}
+
+func TestStandardPostgresDSN_SSLRootCert(t *testing.T) {
+	t.Parallel()
+
+	for _, sslrootcert := range []string{
+		"/etc/ssl/certs/root-ca.pem",
+		"./ca.pem",
+		"/path with spaces/root&ca=1.pem",
+	} {
+		t.Run(sslrootcert, func(t *testing.T) {
+			t.Parallel()
+
+			dsn := standardPostgresDSN(standardPostgresConfig{
+				Username:    "postgres",
+				Password:    "secret",
+				Host:        "localhost",
+				Port:        5432,
+				Database:    "postgres",
+				SSLMode:     "verify-full",
+				SSLRootCert: sslrootcert,
+			})
+
+			u, err := url.Parse(dsn)
+			require.NoError(t, err)
+			assert.Equal(t, url.Values{
+				"sslmode":     {"verify-full"},
+				"sslrootcert": {sslrootcert},
+			}, u.Query(), "the path must be one parameter, whatever characters it has")
+
+			opts, err := pq.ParseURL(dsn)
+			require.NoError(t, err)
+			assert.Contains(t, opts, "sslrootcert='"+sslrootcert+"'")
+			assert.Contains(t, opts, "sslmode='verify-full'")
+		})
+	}
 }
 
 func TestRedactURLError(t *testing.T) {
@@ -119,7 +168,14 @@ func TestGetStandardPostgresGetter_ErrorDoesNotLeakPassword(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 
-			dsn := standardPostgresDSN("postgres", password, host, 1, "postgres", "disable")
+			dsn := standardPostgresDSN(standardPostgresConfig{
+				Username: "postgres",
+				Password: password,
+				Host:     host,
+				Port:     1,
+				Database: "postgres",
+				SSLMode:  "disable",
+			})
 			_, err := GetStandardPostgresGetter(dsn)(ctx)
 			require.Error(t, err)
 			for _, secret := range secrets {
@@ -137,26 +193,4 @@ func TestGetStandardPostgresGetter_RedactsRawURLError(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "FAKE-pw")
 	assert.Contains(t, err.Error(), "invalid connection URL")
-}
-
-func TestWithSSLRootCert(t *testing.T) {
-	t.Parallel()
-
-	dsn := standardPostgresDSN("postgres", "postgres", "localhost", 5432, "postgres", "verify-full")
-
-	assert.Equal(t, dsn, withSSLRootCert(dsn, ""))
-
-	for _, sslrootcert := range []string{
-		"/etc/ssl/certs/root-ca.pem",
-		"./ca.pem",
-		"/path with spaces/root&ca=1.pem",
-	} {
-		got := withSSLRootCert(dsn, sslrootcert)
-		assert.True(t, strings.HasPrefix(got, dsn+"&sslrootcert="), got)
-
-		opts, err := pq.ParseURL(got)
-		require.NoError(t, err)
-		assert.Contains(t, opts, "sslrootcert='"+sslrootcert+"'")
-		assert.Contains(t, opts, "sslmode='verify-full'")
-	}
 }

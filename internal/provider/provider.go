@@ -105,7 +105,7 @@ func (p *pgroleProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 				Optional:    true,
 			},
 			"sslrootcert": schema.StringAttribute{
-				Description: "Path to a file with the root CA certificate(s) used to verify the server certificate when sslmode is 'verify-ca' or 'verify-full' (with 'require', an existing file makes it behave as 'verify-ca'). When unset, the system root CAs are used. Only used with standard PostgreSQL.",
+				Description: "Path to a file with the root CA certificate(s) used to verify the server certificate when sslmode is 'verify-ca' or 'verify-full' (with 'require', an existing file makes it behave as 'verify-ca'). When unset, the system root CAs are used. Cannot be used with sslmode 'disable' or an empty sslmode. Only used with standard PostgreSQL.",
 				Optional:    true,
 			},
 		},
@@ -254,8 +254,33 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 	// Check if we should use standard PostgreSQL connection
 	if host != "" {
-		// Use standard PostgreSQL connection
-		dbgetter = GetStandardPostgresGetter(withSSLRootCert(standardPostgresDSN(username, password, host, port, database, sslmode), sslrootcert))
+		// Use standard PostgreSQL connection.
+		//
+		// lib/pq ignores sslrootcert when sslmode is "disable", so the
+		// connection would not use TLS although the user expects a verified
+		// server. Reject that instead of connecting in plain text.
+		//
+		// An empty sslmode is rejected too: lib/pq drops empty URL options,
+		// so PGSSLMODE in the environment of the Terraform process would
+		// then choose the mode, and it can be "disable".
+		if sslrootcert != "" && (sslmode == "disable" || sslmode == "") {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("sslrootcert"),
+				"sslrootcert requires TLS",
+				`sslrootcert has no effect when sslmode is "disable", which is the default, or empty. Set sslmode to "verify-full" or "verify-ca".`,
+			)
+			return
+		}
+
+		dbgetter = GetStandardPostgresGetter(standardPostgresDSN(standardPostgresConfig{
+			Username:    username,
+			Password:    password,
+			Host:        host,
+			Port:        port,
+			Database:    database,
+			SSLMode:     sslmode,
+			SSLRootCert: sslrootcert,
+		}))
 	} else {
 		// Continue with Cloud SQL connection
 		if projectID == "" {

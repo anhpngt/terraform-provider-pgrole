@@ -55,13 +55,34 @@ func GetDatabaseGetterWithImpersonation(dsn string, targetServiceAccountEmail st
 	}
 }
 
-func standardPostgresDSN(username, password, host string, port int64, database, sslmode string) string {
+// standardPostgresConfig holds the parameters of a standard PostgreSQL
+// connection.
+type standardPostgresConfig struct {
+	Username string
+	Password string
+	Host     string
+	Port     int64
+	Database string
+	SSLMode  string
+	// SSLRootCert is the path to a PEM file with the root CA certificates
+	// that verify the server certificate. It is not in the DSN when empty.
+	SSLRootCert string
+}
+
+// standardPostgresDSN returns the connection URL for lib/pq, with every part
+// escaped.
+func standardPostgresDSN(c standardPostgresConfig) string {
+	params := url.Values{"sslmode": {c.SSLMode}}
+	if c.SSLRootCert != "" {
+		params.Set("sslrootcert", c.SSLRootCert)
+	}
+
 	u := &url.URL{
 		Scheme:   "postgres",
-		User:     url.UserPassword(username, password),
-		Host:     net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), strconv.FormatInt(port, 10)),
-		Path:     "/" + database,
-		RawQuery: url.Values{"sslmode": {sslmode}}.Encode(),
+		User:     url.UserPassword(c.Username, c.Password),
+		Host:     net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(c.Host, "["), "]"), strconv.FormatInt(c.Port, 10)),
+		Path:     "/" + c.Database,
+		RawQuery: params.Encode(),
 	}
 	return u.String()
 }
@@ -72,13 +93,6 @@ func redactURLError(err error) error {
 		return fmt.Errorf("invalid connection URL: %w", urlErr.Err)
 	}
 	return err
-}
-
-func withSSLRootCert(dsn, sslrootcert string) string {
-	if sslrootcert == "" {
-		return dsn
-	}
-	return dsn + "&sslrootcert=" + url.QueryEscape(sslrootcert)
 }
 
 // GetStandardPostgresGetter returns a function that can be used to get a standard PostgreSQL connection.
