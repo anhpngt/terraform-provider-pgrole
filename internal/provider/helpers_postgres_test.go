@@ -1,28 +1,30 @@
 package provider
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
-	"reflect"
-	"strings"
+	"strconv"
 	"testing"
 
-	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
-	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/stretchr/testify/require"
 )
 
-// The tests that use these helpers need a real PostgreSQL server, reached with the standard
-// connection parameters of the provider. They are skipped unless PGROLE_TEST_HOST is set:
+// The tests that use these helpers need a real PostgreSQL server, reached with
+// the standard connection parameters of the provider. They are skipped unless
+// PGROLE_TEST_HOST is set:
 //
 //	PGROLE_TEST_HOST=127.0.0.1 PGROLE_TEST_PORT=5432 go test ./...
 //
-// PGROLE_TEST_USERNAME and PGROLE_TEST_PASSWORD default to "postgres" and must be a superuser.
-// The security label cases also need the anon extension to be loaded and are skipped without it.
+// PGROLE_TEST_USERNAME and PGROLE_TEST_PASSWORD default to "postgres" and must
+// be a superuser. The security label cases also need the anon extension to be
+// loaded, and are skipped without it.
 
 type testServer struct {
-	host, port, username, password string
+	host               string
+	port               int64
+	username, password string
 }
 
 func newTestServer(t *testing.T) testServer {
@@ -39,9 +41,12 @@ func newTestServer(t *testing.T) testServer {
 		}
 		return fallback
 	}
+	port, err := strconv.ParseInt(env("PGROLE_TEST_PORT", "5432"), 10, 64)
+	require.NoError(t, err, "PGROLE_TEST_PORT")
+
 	return testServer{
 		host:     host,
-		port:     env("PGROLE_TEST_PORT", "5432"),
+		port:     port,
 		username: env("PGROLE_TEST_USERNAME", "postgres"),
 		password: env("PGROLE_TEST_PASSWORD", "postgres"),
 	}
@@ -49,16 +54,14 @@ func newTestServer(t *testing.T) testServer {
 
 // getter connects the way the provider does, as the given user.
 func (s testServer) getter(username, password string) F {
-	return GetStandardPostgresGetter(
-		fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", username, password, s.host, s.port),
-	)
+	return GetStandardPostgresGetter(standardPostgresDSN(username, password, s.host, s.port, "postgres", "disable"))
 }
 
 func (s testServer) providerConfig() string {
 	return fmt.Sprintf(`
 provider "pgrole" {
   host     = %q
-  port     = %s
+  port     = %d
   database = "postgres"
   username = %q
   password = %q
@@ -70,27 +73,27 @@ provider "pgrole" {
 func (s testServer) open(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := s.getter(s.username, s.password)(context.Background())
-	if err != nil {
-		t.Fatalf("connect as %s: %s", s.username, err)
-	}
+	db, err := s.getter(s.username, s.password)(t.Context())
+	require.NoError(t, err, "connect as %s", s.username)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
+// mustExec runs a statement and fails the test if the statement fails. It does
+// not use t.Context(), because cleanup functions call it after that context is
+// canceled.
 func mustExec(t *testing.T, db *sql.DB, sqlstr string) {
 	t.Helper()
 
-	if _, err := db.Exec(sqlstr); err != nil {
-		t.Fatalf("%s: %s", sqlstr, err)
-	}
+	_, err := db.Exec(sqlstr)
+	require.NoError(t, err, sqlstr)
 }
 
 // createRole creates a role that is dropped again when the test ends.
 func createRole(t *testing.T, db *sql.DB, role string) {
 	t.Helper()
 
-	mustExec(t, db, fmt.Sprintf("DROP ROLE IF EXISTS %q;", role))
+	dropRole(t, db, role)
 	mustExec(t, db, fmt.Sprintf("CREATE ROLE %q;", role))
 	t.Cleanup(func() { dropRole(t, db, role) })
 }
@@ -101,7 +104,8 @@ func dropRole(t *testing.T, db *sql.DB, role string) {
 	mustExec(t, db, fmt.Sprintf("DROP ROLE IF EXISTS %q;", role))
 }
 
-// hasAnon reports whether the server accepts security labels of the anon provider.
+// hasAnon reports whether the server accepts security labels of the anon
+// provider.
 func hasAnon(t *testing.T, db *sql.DB) bool {
 	t.Helper()
 
@@ -111,10 +115,23 @@ func hasAnon(t *testing.T, db *sql.DB) bool {
 	return err == nil
 }
 
+// readModel runs Read on the given model, and returns the refreshed model, or
+// nil when Read removed the resource from the state.
+func readModel(t *testing.T, r resource.Resource, model any) any {
+	t.Helper()
+
+	resp := runRead(t, r, model)
+	requireNoErrors(t, resp.Diagnostics)
+	if resp.State.Raw.IsNull() {
+		return nil
+	}
+	return decodeState(t, resp.State, model)
+}
+
 // A roleSettingCase describes one resource type by the setting it manages.
 type roleSettingCase struct {
 	name     string
-	resource func() fwresource.Resource
+	resource func() resource.Resource
 	// set gives the role the setting, as Create does.
 	set func(role string) string
 	// managed is the state of the resource once the setting is in place.
@@ -122,6 +139,13 @@ type roleSettingCase struct {
 	// unset is what Read reports for a role that does not have the setting.
 	unset     func(role string) any
 	needsAnon bool
+}
+
+// configured returns the resource of the case, connected with the getter.
+func (c roleSettingCase) configured(t *testing.T, getDB F) resource.Resource {
+	t.Helper()
+
+	return configured(t, c.resource(), getDB)
 }
 
 var roleSettingCases = []roleSettingCase{
@@ -175,96 +199,4 @@ var roleSettingCases = []roleSettingCase{
 		managed:  func(role string) any { return replicationModel{Role: role, Enabled: true} },
 		unset:    func(role string) any { return replicationModel{Role: role, Enabled: false} },
 	},
-}
-
-// configured returns the resource of a case, connected as the given user.
-func (c roleSettingCase) configured(t *testing.T, getDB F) fwresource.Resource {
-	t.Helper()
-
-	return configured(t, c.resource(), getDB)
-}
-
-// configured connects a resource as the given user.
-func configured(t *testing.T, r fwresource.Resource, getDB F) fwresource.Resource {
-	t.Helper()
-
-	configurable, ok := r.(fwresource.ResourceWithConfigure)
-	if !ok {
-		t.Fatalf("%T cannot be configured", r)
-	}
-	var resp fwresource.ConfigureResponse
-	configurable.Configure(context.Background(), fwresource.ConfigureRequest{ProviderData: getDB}, &resp)
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("configure: %v", resp.Diagnostics)
-	}
-	return r
-}
-
-// stateOf returns the Terraform state holding the given model of a resource.
-func stateOf(t *testing.T, r fwresource.Resource, model any) tfsdk.State {
-	t.Helper()
-
-	var schemaResp fwresource.SchemaResponse
-	r.Schema(context.Background(), fwresource.SchemaRequest{}, &schemaResp)
-	state := tfsdk.State{Schema: schemaResp.Schema}
-	if diags := state.Set(context.Background(), model); diags.HasError() {
-		t.Fatalf("build state: %v", diags)
-	}
-	return state
-}
-
-// read runs Read on a state and returns the refreshed model, or nil when Read removed the resource.
-func read(t *testing.T, r fwresource.Resource, model any) any {
-	t.Helper()
-
-	state := stateOf(t, r, model)
-	resp := fwresource.ReadResponse{State: state}
-	r.Read(context.Background(), fwresource.ReadRequest{State: state}, &resp)
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("read: %v", resp.Diagnostics)
-	}
-	if resp.State.Raw.IsNull() {
-		return nil
-	}
-
-	got := reflect.New(reflect.TypeOf(model))
-	if diags := resp.State.Get(context.Background(), got.Interface()); diags.HasError() {
-		t.Fatalf("decode state: %v", diags)
-	}
-	return got.Elem().Interface()
-}
-
-// createResource runs Create with the given model as the plan and returns the error it reports, if any.
-func createResource(r fwresource.Resource, model any) string {
-	ctx := context.Background()
-
-	var schemaResp fwresource.SchemaResponse
-	r.Schema(ctx, fwresource.SchemaRequest{}, &schemaResp)
-	plan := tfsdk.Plan{Schema: schemaResp.Schema}
-	if diags := plan.Set(ctx, model); diags.HasError() {
-		return fmt.Sprintf("build plan: %v", diags)
-	}
-	resp := fwresource.CreateResponse{State: tfsdk.State{Schema: schemaResp.Schema}}
-	r.Create(ctx, fwresource.CreateRequest{Plan: plan}, &resp)
-
-	var msgs []string
-	for _, d := range resp.Diagnostics.Errors() {
-		msgs = append(msgs, d.Summary()+": "+d.Detail())
-	}
-	return strings.Join(msgs, "; ")
-}
-
-// deleteResource runs Delete on a state and returns the error it reports, if any.
-func deleteResource(t *testing.T, r fwresource.Resource, model any) string {
-	t.Helper()
-
-	state := stateOf(t, r, model)
-	resp := fwresource.DeleteResponse{State: state}
-	r.Delete(context.Background(), fwresource.DeleteRequest{State: state}, &resp)
-
-	var msgs []string
-	for _, d := range resp.Diagnostics.Errors() {
-		msgs = append(msgs, d.Summary()+": "+d.Detail())
-	}
-	return strings.Join(msgs, "; ")
 }
