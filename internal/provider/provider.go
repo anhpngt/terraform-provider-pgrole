@@ -239,9 +239,7 @@ func (p *pgroleProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	// Check if we should use standard PostgreSQL connection
 	if host != "" {
 		// Use standard PostgreSQL connection
-		url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-			username, password, host, port, database, sslmode)
-		dbgetter = GetStandardPostgresGetter(url)
+		dbgetter = GetStandardPostgresGetter(standardPostgresDSN(username, password, host, port, database, sslmode))
 	} else {
 		// Continue with Cloud SQL connection
 		if projectID == "" {
