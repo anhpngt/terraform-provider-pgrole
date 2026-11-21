@@ -94,6 +94,7 @@ func TestPgroleProvider_Resources(t *testing.T) {
 		"pgrole_connection_limit",
 		"pgrole_createrole",
 		"pgrole_replication",
+		"pgrole_revoke_on_destroy",
 		"pgrole_security_label",
 		"pgrole_statement_timeout",
 	}, names)
