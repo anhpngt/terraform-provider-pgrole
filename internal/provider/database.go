@@ -19,13 +19,53 @@ import (
 )
 
 // F is a function that returns a database connection.
+//
+// The connection is to the database of the provider configuration, unless the
+// context asks for another database of the same server (see withDatabase).
 type F func(context.Context) (*sql.DB, error)
+
+type databaseKey struct{}
+
+// withDatabase returns a context that makes an F connect to the given database
+// instead of the one of the provider configuration. Privileges on tables,
+// schemas and the like are stored in the database of the object, so reaching
+// all of them takes a connection to each database.
+func withDatabase(ctx context.Context, database string) context.Context {
+	return context.WithValue(ctx, databaseKey{}, database)
+}
+
+// dsnForContext returns the connection URL to use: the given one, or the same
+// URL with another database when the context asks for one. The database is the
+// last segment of the path, for standard PostgreSQL (postgres://host:port/db)
+// and for Cloud SQL (gcppostgres://project/region/instance/db).
+func dsnForContext(ctx context.Context, dsn string) (string, error) {
+	database, ok := ctx.Value(databaseKey{}).(string)
+	if !ok || database == "" {
+		return dsn, nil
+	}
+
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("error parsing database connection string: %s", redactURLError(err))
+	}
+
+	escaped := u.EscapedPath()
+	u.RawPath = escaped[:strings.LastIndex(escaped, "/")+1] + url.PathEscape(database)
+	if u.Path, err = url.PathUnescape(u.RawPath); err != nil {
+		return "", fmt.Errorf("error parsing database connection string: %s", err)
+	}
+	return u.String(), nil
+}
 
 // GetDatabaseGetter returns a function that can be used to get a database connection.
 //
 // Remember to call db.Close() to cleanup the connection.
 func GetDatabaseGetter(dsn string) F {
 	return func(ctx context.Context) (*sql.DB, error) {
+		dsn, err := dsnForContext(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
 		return postgres.Open(ctx, dsn)
 	}
 }
@@ -34,6 +74,10 @@ func GetDatabaseGetter(dsn string) F {
 // but allows impersonating a service account.
 func GetDatabaseGetterWithImpersonation(dsn string, targetServiceAccountEmail string) F {
 	return func(ctx context.Context) (*sql.DB, error) {
+		dsn, err := dsnForContext(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
 		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 			TargetPrincipal: targetServiceAccountEmail,
 			Scopes:          []string{"https://www.googleapis.com/auth/sqlservice.admin"},
@@ -100,6 +144,10 @@ func redactURLError(err error) error {
 // Remember to call db.Close() to cleanup the connection.
 func GetStandardPostgresGetter(dsn string) F {
 	return func(ctx context.Context) (*sql.DB, error) {
+		dsn, err := dsnForContext(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
 		db, err := sql.Open("postgres", dsn)
 		if err != nil {
 			return nil, fmt.Errorf("error opening database connection: %s", err)

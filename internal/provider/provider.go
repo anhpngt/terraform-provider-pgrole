@@ -343,6 +343,7 @@ func (p *pgroleProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewCreateRoleResource,
 		NewAuditResource,
 		NewSecurityLabelResource,
+		NewRevokeOnDestroyResource,
 	}
 }
 
