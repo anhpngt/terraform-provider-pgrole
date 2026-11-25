@@ -16,6 +16,7 @@ func TestReplicationSQL(t *testing.T) {
 	}{
 		{"enable", sqlEnableReplication("app"), `ALTER ROLE "app" REPLICATION;`},
 		{"disable", sqlDisableReplication("app"), `ALTER ROLE "app" NOREPLICATION;`},
+		{"double quote in role name", sqlEnableReplication(`a"b`), `ALTER ROLE "a""b" REPLICATION;`},
 	}
 
 	for _, tc := range testcases {

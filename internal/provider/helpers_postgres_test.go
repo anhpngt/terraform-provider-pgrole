@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -101,14 +102,14 @@ func createRole(t *testing.T, db *sql.DB, role string) {
 	t.Helper()
 
 	dropRole(t, db, role)
-	mustExec(t, db, fmt.Sprintf("CREATE ROLE %q;", role))
+	mustExec(t, db, fmt.Sprintf("CREATE ROLE %s;", pq.QuoteIdentifier(role)))
 	t.Cleanup(func() { dropRole(t, db, role) })
 }
 
 func dropRole(t *testing.T, db *sql.DB, role string) {
 	t.Helper()
 
-	mustExec(t, db, fmt.Sprintf("DROP ROLE IF EXISTS %q;", role))
+	mustExec(t, db, fmt.Sprintf("DROP ROLE IF EXISTS %s;", pq.QuoteIdentifier(role)))
 }
 
 // hasAnon reports whether the server accepts security labels of the anon

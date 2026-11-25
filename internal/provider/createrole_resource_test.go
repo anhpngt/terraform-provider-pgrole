@@ -17,6 +17,7 @@ func TestCreateRoleSQL(t *testing.T) {
 	}{
 		{"enable", sqlEnableCreateRole("app"), `ALTER ROLE "app" CREATEROLE;`},
 		{"disable", sqlDisableCreateRole("app"), `ALTER ROLE "app" NOCREATEROLE;`},
+		{"double quote in role name", sqlEnableCreateRole(`a"b`), `ALTER ROLE "a""b" CREATEROLE;`},
 	}
 
 	for _, tc := range testcases {

@@ -212,6 +212,65 @@ func TestRoleSettings(t *testing.T) {
 	}
 }
 
+func TestRoleSettingsQuotedRoleName(t *testing.T) {
+	server := newTestServer(t)
+	db := server.open(t)
+	getDB := server.getter(server.username, server.password)
+
+	const victim = "pgrole_test_v"
+
+	isSuperuser := func(t *testing.T) bool {
+		t.Helper()
+
+		var super bool
+		require.NoError(t, db.QueryRow("SELECT rolsuper FROM pg_roles WHERE rolname = $1", victim).Scan(&super))
+		return super
+	}
+
+	for i, c := range roleSettingCases {
+		if c.needsAnon {
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			prefix := fmt.Sprintf("pgrole_test_q%d", i)
+			role := fmt.Sprintf(`%s"; ALTER ROLE %s SUPERUSER; --`, prefix, victim)
+			createRole(t, db, victim)
+			createRole(t, db, prefix+`\`)
+			createRole(t, db, role)
+			r := c.configured(t, getDB)
+
+			resp := runCreate(t, r, c.managed(role))
+			assert.False(t, isSuperuser(t), "create must not run SQL from the role name")
+			requireNoErrors(t, resp.Diagnostics)
+			assert.Equal(t, c.managed(role), readModel(t, r, c.unset(role)), "after create")
+
+			requireNoErrors(t, runDelete(t, r, c.managed(role)).Diagnostics)
+			assert.False(t, isSuperuser(t), "delete must not run SQL from the role name")
+			assert.Equal(t, c.unset(role), readModel(t, r, c.managed(role)), "after delete")
+		})
+	}
+}
+
+func TestAuditLogOptionIsQuoted(t *testing.T) {
+	server := newTestServer(t)
+	db := server.open(t)
+	r := configured(t, NewAuditResource(), server.getter(server.username, server.password))
+
+	const (
+		role   = "pgrole_test_audit_value"
+		victim = "pgrole_test_audit_victim"
+	)
+	createRole(t, db, role)
+	createRole(t, db, victim)
+
+	option := fmt.Sprintf("none'; ALTER ROLE %s SUPERUSER; --", victim)
+	_ = runCreate(t, r, auditModel{Role: role, AuditLogOption: option})
+
+	var super bool
+	require.NoError(t, db.QueryRow("SELECT rolsuper FROM pg_roles WHERE rolname = $1", victim).Scan(&super))
+	assert.False(t, super, "create must not run SQL from audit_log_option")
+}
+
 // TestAccRoleDroppedOutsideTerraform runs the provider under Terraform against
 // the test server, for the case that the role is dropped by whatever manages it
 // before its settings are removed from the configuration.

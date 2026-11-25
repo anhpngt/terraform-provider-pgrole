@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -237,9 +238,9 @@ func (r *replicationResource) ImportState(ctx context.Context, req resource.Impo
 }
 
 func sqlEnableReplication(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q REPLICATION;", role)
+	return fmt.Sprintf("ALTER ROLE %s REPLICATION;", pq.QuoteIdentifier(role))
 }
 
 func sqlDisableReplication(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q NOREPLICATION;", role)
+	return fmt.Sprintf("ALTER ROLE %s NOREPLICATION;", pq.QuoteIdentifier(role))
 }

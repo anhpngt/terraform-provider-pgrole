@@ -19,6 +19,7 @@ func TestStatementTimeoutSQL(t *testing.T) {
 	}{
 		{"set", sqlSetStatementTimeout("app", "30s"), `ALTER ROLE "app" SET statement_timeout = '30s';`},
 		{"reset", sqlResetStatementTimeout("app"), `ALTER ROLE "app" RESET statement_timeout;`},
+		{"double quote in role name", sqlSetStatementTimeout(`a"b`, "30s"), `ALTER ROLE "a""b" SET statement_timeout = '30s';`},
 	}
 
 	for _, tc := range testcases {
