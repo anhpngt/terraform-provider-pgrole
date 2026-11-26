@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -294,11 +294,10 @@ func (r *securityLabelResource) ImportState(ctx context.Context, req resource.Im
 
 // sqlSetSecurityLabel generates SQL to set a security label for a role
 func sqlSetSecurityLabel(role string, label string) string {
-	escapedLabel := strings.ReplaceAll(label, "'", "''")
-	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS '%s';", role, escapedLabel)
+	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS %s;", pq.QuoteIdentifier(role), pq.QuoteLiteral(label))
 }
 
 // sqlRemoveSecurityLabel generates SQL to remove a security label for a role
 func sqlRemoveSecurityLabel(role string) string {
-	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %q IS NULL;", role)
+	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS NULL;", pq.QuoteIdentifier(role))
 }

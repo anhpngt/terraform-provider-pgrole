@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -243,9 +244,9 @@ func (r *bypassrlsResource) ImportState(ctx context.Context, req resource.Import
 }
 
 func sqlEnableBypassRLS(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q BYPASSRLS;", role)
+	return fmt.Sprintf("ALTER ROLE %s BYPASSRLS;", pq.QuoteIdentifier(role))
 }
 
 func sqlDisableBypassRLS(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q NOBYPASSRLS;", role)
+	return fmt.Sprintf("ALTER ROLE %s NOBYPASSRLS;", pq.QuoteIdentifier(role))
 }

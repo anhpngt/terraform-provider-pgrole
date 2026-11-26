@@ -23,6 +23,7 @@ func TestSecurityLabelSQL(t *testing.T) {
 		{"set", sqlSetSecurityLabel("app", "MASKED"), `SECURITY LABEL FOR anon ON ROLE "app" IS 'MASKED';`},
 		{"escape quote", sqlSetSecurityLabel("app", "it's"), `SECURITY LABEL FOR anon ON ROLE "app" IS 'it''s';`},
 		{"remove", sqlRemoveSecurityLabel("app"), `SECURITY LABEL FOR anon ON ROLE "app" IS NULL;`},
+		{"double quote in role name", sqlRemoveSecurityLabel(`a"b`), `SECURITY LABEL FOR anon ON ROLE "a""b" IS NULL;`},
 	}
 
 	for _, tc := range testcases {

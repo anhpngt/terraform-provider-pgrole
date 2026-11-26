@@ -19,6 +19,7 @@ func TestBypassRLSSQL(t *testing.T) {
 		{"disable", sqlDisableBypassRLS("app"), `ALTER ROLE "app" NOBYPASSRLS;`},
 		// Role names with upper case, dashes, and dots need quotes in SQL.
 		{"quoted role name", sqlEnableBypassRLS("App-User.1"), `ALTER ROLE "App-User.1" BYPASSRLS;`},
+		{"double quote in role name", sqlEnableBypassRLS(`a"; DROP ROLE b; --`), `ALTER ROLE "a""; DROP ROLE b; --" BYPASSRLS;`},
 	}
 
 	for _, tc := range testcases {

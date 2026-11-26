@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -238,9 +239,9 @@ func (r *createRoleResource) ImportState(ctx context.Context, req resource.Impor
 }
 
 func sqlEnableCreateRole(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q CREATEROLE;", role)
+	return fmt.Sprintf("ALTER ROLE %s CREATEROLE;", pq.QuoteIdentifier(role))
 }
 
 func sqlDisableCreateRole(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q NOCREATEROLE;", role)
+	return fmt.Sprintf("ALTER ROLE %s NOCREATEROLE;", pq.QuoteIdentifier(role))
 }

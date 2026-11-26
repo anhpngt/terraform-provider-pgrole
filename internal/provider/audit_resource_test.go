@@ -13,6 +13,7 @@ func TestSQLSetAuditLog(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, `ALTER ROLE "app" SET pgaudit.log = 'read, write';`, sqlSetAuditLog("app", "read, write"))
+	assert.Equal(t, `ALTER ROLE "a""b" SET pgaudit.log = 'none''; ALTER ROLE b SUPERUSER; --';`, sqlSetAuditLog(`a"b`, `none'; ALTER ROLE b SUPERUSER; --`))
 }
 
 func TestAuditResource_CRUD(t *testing.T) {

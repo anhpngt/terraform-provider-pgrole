@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -225,7 +226,7 @@ func (r *auditResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 
 	// Delete the resource by unsetting the pgaudit.log parameter
-	sqlstr := fmt.Sprintf("ALTER ROLE %q RESET pgaudit.log;", state.Role)
+	sqlstr := fmt.Sprintf("ALTER ROLE %s RESET pgaudit.log;", pq.QuoteIdentifier(state.Role))
 	db, err := r.getDB(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -250,5 +251,5 @@ func (r *auditResource) ImportState(ctx context.Context, req resource.ImportStat
 }
 
 func sqlSetAuditLog(role string, auditLogOption string) string {
-	return fmt.Sprintf("ALTER ROLE %q SET pgaudit.log = '%s';", role, auditLogOption)
+	return fmt.Sprintf("ALTER ROLE %s SET pgaudit.log = %s;", pq.QuoteIdentifier(role), pq.QuoteLiteral(auditLogOption))
 }

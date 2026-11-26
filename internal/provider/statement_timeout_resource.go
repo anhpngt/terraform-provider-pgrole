@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/lib/pq"
 )
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -250,9 +251,9 @@ func (r *statementTimeoutResource) ImportState(ctx context.Context, req resource
 }
 
 func sqlSetStatementTimeout(role, timeout string) string {
-	return fmt.Sprintf("ALTER ROLE %q SET statement_timeout = '%s';", role, timeout)
+	return fmt.Sprintf("ALTER ROLE %s SET statement_timeout = %s;", pq.QuoteIdentifier(role), pq.QuoteLiteral(timeout))
 }
 
 func sqlResetStatementTimeout(role string) string {
-	return fmt.Sprintf("ALTER ROLE %q RESET statement_timeout;", role)
+	return fmt.Sprintf("ALTER ROLE %s RESET statement_timeout;", pq.QuoteIdentifier(role))
 }
