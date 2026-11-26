@@ -13,18 +13,21 @@ func TestSQLSetConnectionLimit(t *testing.T) {
 
 	testcases := []struct {
 		name     string
+		role     string
 		limit    int32
 		expected string
 	}{
-		{"limit", 10, `ALTER ROLE "app" CONNECTION LIMIT 10;`},
-		{"no connections", 0, `ALTER ROLE "app" CONNECTION LIMIT 0;`},
-		{"no limit", -1, `ALTER ROLE "app" CONNECTION LIMIT -1;`},
+		{"limit", testRole, 10, `ALTER ROLE "app" CONNECTION LIMIT 10;`},
+		{"no connections", testRole, 0, `ALTER ROLE "app" CONNECTION LIMIT 0;`},
+		{"no limit", testRole, -1, `ALTER ROLE "app" CONNECTION LIMIT -1;`},
+		{"double quote in role name", `app"reporting`, 10, `ALTER ROLE "app""reporting" CONNECTION LIMIT 10;`},
+		{"literal backslash in role name", `app\reporting`, 10, `ALTER ROLE "app\reporting" CONNECTION LIMIT 10;`},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, sqlSetConnectionLimit("app", tc.limit))
+			assert.Equal(t, tc.expected, sqlSetConnectionLimit(tc.role, tc.limit))
 		})
 	}
 }

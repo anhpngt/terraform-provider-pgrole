@@ -81,6 +81,18 @@ func TestLockRole_RoleNamesAreCaseSensitive(t *testing.T) {
 	}
 }
 
+func TestRoleHelpers_RejectNULBeforeSQL(t *testing.T) {
+	t.Parallel()
+
+	const role = testRole + "\x00suffix"
+	ctx := t.Context()
+	// A nil database makes any attempt to send a statement fail the test.
+	assert.ErrorIs(t, execForRole(ctx, nil, role, ""), errRoleNameContainsNUL)
+	_, err := roleExists(ctx, nil, role)
+	assert.ErrorIs(t, err, errRoleNameContainsNUL)
+	assert.ErrorIs(t, undoRoleSetting(ctx, nil, role, ""), errRoleNameContainsNUL)
+}
+
 // The tests below need a PostgreSQL server. See helpers_postgres_test.go.
 
 // Terraform creates the settings of one role in parallel when nothing orders
