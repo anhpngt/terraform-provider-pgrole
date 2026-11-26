@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -12,6 +14,8 @@ import (
 
 // roleLocks holds one lock per role name.
 var roleLocks sync.Map
+
+var errRoleNameContainsNUL = errors.New("role name must not contain a NUL byte")
 
 // lockRole takes the lock of a role and returns the function that releases it.
 //
@@ -27,8 +31,19 @@ func lockRole(role string) (unlock func()) {
 	return mu.Unlock
 }
 
+func validateRoleName(role string) error {
+	// pq.QuoteIdentifier truncates at a NUL byte, which can target a different role.
+	if strings.ContainsRune(role, 0) {
+		return errRoleNameContainsNUL
+	}
+	return nil
+}
+
 // execForRole runs a statement that changes a role, holding the lock of that role.
 func execForRole(ctx context.Context, db *sql.DB, role string, sqlstr string) error {
+	if err := validateRoleName(role); err != nil {
+		return err
+	}
 	defer lockRole(role)()
 
 	_, err := db.ExecContext(ctx, sqlstr)
@@ -37,6 +52,9 @@ func execForRole(ctx context.Context, db *sql.DB, role string, sqlstr string) er
 
 // roleExists reports whether a role with the given name exists.
 func roleExists(ctx context.Context, db *sql.DB, role string) (bool, error) {
+	if err := validateRoleName(role); err != nil {
+		return false, err
+	}
 	var exists bool
 	err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1);", role).Scan(&exists)
 	return exists, err
@@ -53,7 +71,7 @@ func removeIfRoleGone(ctx context.Context, db *sql.DB, role string, resp *resour
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to check role",
-			fmt.Sprintf("Failed to check whether role %s exists: %s", role, err),
+			fmt.Sprintf("Failed to check whether role %q exists: %s", role, err),
 		)
 		return true
 	}
@@ -75,8 +93,8 @@ func removeIfRoleGone(ctx context.Context, db *sql.DB, role string, resp *resour
 // made, where Read could not have removed the resource from the state.
 func undoRoleSetting(ctx context.Context, db *sql.DB, role string, sqlstr string) error {
 	execErr := execForRole(ctx, db, role, sqlstr)
-	if execErr == nil {
-		return nil
+	if execErr == nil || errors.Is(execErr, errRoleNameContainsNUL) {
+		return execErr
 	}
 
 	if exists, err := roleExists(ctx, db, role); err != nil || exists {

@@ -125,6 +125,40 @@ func TestResources_ConnectionFailure(t *testing.T) {
 	}
 }
 
+func TestResources_RejectRoleNameWithNUL(t *testing.T) {
+	t.Parallel()
+
+	const want = "role name must not contain a NUL byte"
+	for _, tc := range roleSettingCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			valid := tc.managed(testRole)
+			invalid := tc.managed(testRole + "\x00suffix")
+			newResource := func() resource.Resource {
+				r, mock := newMockedResource(t, tc.resource)
+				mock.ExpectClose()
+				return r
+			}
+
+			created := runCreate(t, newResource(), invalid)
+			assert.Contains(t, diagError(created.Diagnostics), want, "create")
+			assertRemoved(t, created.State)
+
+			read := runRead(t, newResource(), invalid)
+			assert.Contains(t, diagError(read.Diagnostics), want, "read")
+			assert.NotContains(t, diagError(read.Diagnostics), "\x00", "read diagnostic must escape NUL")
+			assertState(t, invalid, read.State)
+
+			updated := runUpdate(t, newResource(), valid, invalid)
+			assert.Contains(t, diagError(updated.Diagnostics), want, "update")
+			assertState(t, valid, updated.State)
+
+			assert.Contains(t, diagError(runDelete(t, newResource(), invalid).Diagnostics), want, "delete")
+		})
+	}
+}
+
 func TestResources_Read_RoleGone(t *testing.T) {
 	t.Parallel()
 
