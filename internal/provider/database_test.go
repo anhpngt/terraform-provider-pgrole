@@ -214,7 +214,7 @@ func TestDSNForContext(t *testing.T) {
 		t.Parallel()
 
 		// The URL must come back untouched, byte for byte: this is what every
-		// resource but pgrole_revoke_on_destroy connects with.
+		// resource connects with when no other database is requested.
 		for _, dsn := range []string{standard, cloudSQL} {
 			got, err := dsnForContext(t.Context(), dsn)
 			require.NoError(t, err)

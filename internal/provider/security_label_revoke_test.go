@@ -50,18 +50,37 @@ func expectRoleOID(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"oid"}).AddRow(testRoleOID))
 }
 
-// expectPrivilegeDatabases makes the mock report the databases where the role holds privileges,
-// and then its own name.
+// expectPrivilegeDatabases makes the mock report the connectable databases where the role holds
+// privileges, acquire the advisory lock, and report the current database.
 func expectPrivilegeDatabases(mock sqlmock.Sqlmock, databases ...string) {
-	rows := sqlmock.NewRows([]string{"datname"})
-	for _, database := range databases {
-		rows.AddRow(database)
+	dbs := make([]rolePrivilegeDatabase, len(databases))
+	for i, name := range databases {
+		dbs[i] = rolePrivilegeDatabase{name: name, canConnect: true}
+	}
+	expectPrivilegeDatabaseRows(mock, dbs...)
+}
+
+func expectPrivilegeDatabaseRows(mock sqlmock.Sqlmock, databases ...rolePrivilegeDatabase) {
+	rows := sqlmock.NewRows([]string{"datname", "has_database_privilege"})
+	hasConnectable := false
+	for _, d := range databases {
+		rows.AddRow(d.name, d.canConnect)
+		if d.canConnect {
+			hasConnectable = true
+		}
 	}
 	mock.ExpectQuery(exact(sqlRolePrivilegeDatabases)).WithArgs(testRoleOID).WillReturnRows(rows)
-	if len(databases) > 0 {
+	if hasConnectable {
+		mock.ExpectExec(exact(sqlAcquireRevokeLock)).WithArgs(revokeAdvisoryLockKey).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(exact(sqlCurrentDatabase)).
 			WillReturnRows(sqlmock.NewRows([]string{"current_database"}).AddRow(testDatabase))
 	}
+}
+
+func expectAdvisoryUnlock(mock sqlmock.Sqlmock) {
+	mock.ExpectExec(exact(sqlReleaseRevokeLock)).WithArgs(revokeAdvisoryLockKey).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 func expectMaskingPrivileges(mock sqlmock.Sqlmock, held ...maskingPrivilege) {
@@ -72,8 +91,16 @@ func expectMaskingPrivileges(mock sqlmock.Sqlmock, held ...maskingPrivilege) {
 	mock.ExpectQuery(exact(sqlMaskingPrivileges)).WithArgs(testRoleOID).WillReturnRows(rows)
 }
 
+// expectOwnerPrivilegeState makes the mock report the provider user's privilege state for role
+// "owner", which owns the objects of whatAnonGrants.
+func expectOwnerPrivilegeState(mock sqlmock.Sqlmock, hasUsage, canInherit, hasSelfGranted bool) {
+	mock.ExpectQuery(exact(sqlRolePrivilegeState)).WithArgs("owner").
+		WillReturnRows(sqlmock.NewRows([]string{"has_usage", "rolinherit", "has_self_granted"}).
+			AddRow(hasUsage, canInherit, hasSelfGranted))
+}
+
 // expectHasPrivilegesOfOwner makes the mock say whether the provider's user has the privileges of
-// role "owner", which owns the objects of whatAnonGrants.
+// role "owner" after a GRANT.
 func expectHasPrivilegesOfOwner(mock sqlmock.Sqlmock, has bool) {
 	mock.ExpectQuery(exact(sqlHasPrivilegesOfRole)).WithArgs("owner").
 		WillReturnRows(sqlmock.NewRows([]string{"pg_has_role"}).AddRow(has))
@@ -175,6 +202,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock)
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		requireNoErrors(t, runDelete(t, r, labelWithRevoke).Diagnostics)
@@ -189,11 +217,12 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
 		// The user has the privileges of the owner already: no membership is taken.
-		expectHasPrivilegesOfOwner(mock, true)
+		expectOwnerPrivilegeState(mock, true, true, false)
 		mock.ExpectBegin()
 		expectRevokes(mock)
 		mock.ExpectCommit()
 		expectMaskingPrivileges(mock)
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		requireNoErrors(t, runDelete(t, r, labelWithRevoke).Diagnostics)
@@ -207,7 +236,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, false)
+		expectOwnerPrivilegeState(mock, false, true, false)
 		expectExec(mock, `GRANT "owner" TO CURRENT_USER;`)
 		expectHasPrivilegesOfOwner(mock, true)
 		mock.ExpectBegin()
@@ -215,6 +244,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		mock.ExpectCommit()
 		expectMaskingPrivileges(mock)
 		expectExec(mock, `REVOKE "owner" FROM CURRENT_USER;`)
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		requireNoErrors(t, runDelete(t, r, labelWithRevoke).Diagnostics)
@@ -230,8 +260,9 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, false)
-		expectExecError(mock, `GRANT "owner" TO CURRENT_USER;`, errors.New(`permission denied to grant role "owner"`))
+		expectOwnerPrivilegeState(mock, false, true, false)
+		expectExecError(mock, `GRANT "owner" TO CURRENT_USER;`, &pq.Error{Code: "42501", Message: `permission denied to grant role "owner"`})
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		resp := runDelete(t, r, labelWithRevoke)
@@ -241,25 +272,164 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		assert.Contains(t, diagError(resp.Diagnostics), `database "postgres"`)
 	})
 
-	t.Run("membership without inherited privileges", func(t *testing.T) {
+	t.Run("NOINHERIT user does not grant or revoke existing membership", func(t *testing.T) {
 		t.Parallel()
 
-		// A NOINHERIT user is a member after the GRANT and still cannot act as the owner. The
-		// membership is taken back.
+		// A NOINHERIT user cannot inherit privileges from a GRANT, and revoking afterwards would
+		// remove a membership it already held. Neither GRANT nor REVOKE may run.
 		r, mock := newMockedResource(t, NewSecurityLabelResource)
 		expectExec(mock, removeLabelSQL)
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, false)
+		expectOwnerPrivilegeState(mock, false, false, false)
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		assertError(t, resp.Diagnostics, revokeSummary)
+		assert.Contains(t, diagError(resp.Diagnostics), "NOINHERIT")
+	})
+
+	t.Run("pre-existing self-granted non-inheriting membership is not revoked", func(t *testing.T) {
+		t.Parallel()
+
+		// On PostgreSQL 16+, if CURRENT_USER already holds a self-granted membership with
+		// INHERIT FALSE, GRANT would not change it and REVOKE would remove it.
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabases(mock, testDatabase)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, false, true, true)
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		assertError(t, resp.Diagnostics, revokeSummary)
+		assert.Contains(t, diagError(resp.Diagnostics), "already a member of the role without inheriting")
+	})
+
+	t.Run("membership without inherited privileges after GRANT", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabases(mock, testDatabase)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, false, true, false)
 		expectExec(mock, `GRANT "owner" TO CURRENT_USER;`)
 		expectHasPrivilegesOfOwner(mock, false)
 		expectExec(mock, `REVOKE "owner" FROM CURRENT_USER;`)
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		resp := runDelete(t, r, labelWithRevoke)
 		assertError(t, resp.Diagnostics, revokeSummary)
 		assert.Contains(t, diagError(resp.Diagnostics), "does not inherit its privileges")
+	})
+
+	t.Run("non-permission server error on GRANT is not blamed on ADMIN OPTION", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabases(mock, testDatabase)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, false, true, false)
+		expectExecError(mock, `GRANT "owner" TO CURRENT_USER;`, &pq.Error{Code: "0LP01", Message: `role "app" cannot be a member of itself`})
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		assertError(t, resp.Diagnostics, revokeSummary)
+		assert.Contains(t, diagError(resp.Diagnostics), "cannot be a member of itself")
+		assert.NotContains(t, diagError(resp.Diagnostics), "ADMIN OPTION")
+	})
+
+	t.Run("interrupted GRANT that committed on server is cleaned up", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabases(mock, testDatabase)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, false, true, false)
+		expectExecError(mock, `GRANT "owner" TO CURRENT_USER;`, context.Canceled)
+		expectHasPrivilegesOfOwner(mock, true)
+		expectExec(mock, `REVOKE "owner" FROM CURRENT_USER;`)
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		assertError(t, resp.Diagnostics, revokeSummary)
+		assert.Contains(t, diagError(resp.Diagnostics), context.Canceled.Error())
+		assert.NotContains(t, diagError(resp.Diagnostics), "ADMIN OPTION")
+	})
+
+	t.Run("interrupted GRANT that did not commit is not revoked", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabases(mock, testDatabase)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, false, true, false)
+		expectExecError(mock, `GRANT "owner" TO CURRENT_USER;`, context.Canceled)
+		expectHasPrivilegesOfOwner(mock, false)
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		assertError(t, resp.Diagnostics, revokeSummary)
+		assert.Contains(t, diagError(resp.Diagnostics), context.Canceled.Error())
+		assert.NotContains(t, diagError(resp.Diagnostics), "ADMIN OPTION")
+	})
+
+	t.Run("skips database without CONNECT privilege with a warning", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabaseRows(mock,
+			rolePrivilegeDatabase{name: "restricted", canConnect: false},
+			rolePrivilegeDatabase{name: testDatabase, canConnect: true},
+		)
+		expectMaskingPrivileges(mock, whatAnonGrants...)
+		expectOwnerPrivilegeState(mock, true, true, false)
+		mock.ExpectBegin()
+		expectRevokes(mock)
+		mock.ExpectCommit()
+		expectMaskingPrivileges(mock)
+		expectAdvisoryUnlock(mock)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		requireNoErrors(t, resp.Diagnostics)
+		require.Equal(t, 1, resp.Diagnostics.WarningsCount())
+		assert.Contains(t, resp.Diagnostics[0].Detail(), `database "restricted"`)
+	})
+
+	t.Run("only unconnectable databases warns without taking lock", func(t *testing.T) {
+		t.Parallel()
+
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		expectExec(mock, removeLabelSQL)
+		expectRoleOID(mock)
+		expectPrivilegeDatabaseRows(mock,
+			rolePrivilegeDatabase{name: "restricted", canConnect: false},
+		)
+		mock.ExpectClose()
+
+		resp := runDelete(t, r, labelWithRevoke)
+		requireNoErrors(t, resp.Diagnostics)
+		require.Equal(t, 1, resp.Diagnostics.WarningsCount())
+		assert.Contains(t, resp.Diagnostics[0].Detail(), `database "restricted"`)
 	})
 
 	t.Run("a concurrent change is tried again", func(t *testing.T) {
@@ -270,7 +440,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, true)
+		expectOwnerPrivilegeState(mock, true, true, false)
 		mock.ExpectBegin()
 		expectExecError(mock, `REVOKE ALL PRIVILEGES ON SCHEMA "anon" FROM "app";`, &pq.Error{Code: "XX000", Message: "tuple concurrently updated"})
 		mock.ExpectRollback()
@@ -278,6 +448,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRevokes(mock)
 		mock.ExpectCommit()
 		expectMaskingPrivileges(mock)
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		requireNoErrors(t, runDelete(t, r, labelWithRevoke).Diagnostics)
@@ -291,10 +462,11 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, true)
+		expectOwnerPrivilegeState(mock, true, true, false)
 		mock.ExpectBegin()
 		expectExecError(mock, `REVOKE ALL PRIVILEGES ON SCHEMA "anon" FROM "app";`, &pq.Error{Code: "42501", Message: "permission denied for schema anon"})
 		mock.ExpectRollback()
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		resp := runDelete(t, r, labelWithRevoke)
@@ -312,11 +484,12 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, true)
+		expectOwnerPrivilegeState(mock, true, true, false)
 		mock.ExpectBegin()
 		expectRevokes(mock)
 		mock.ExpectCommit()
 		expectMaskingPrivileges(mock, maskingPrivilege{kind: maskingTables, schema: "mask", owner: "owner"})
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		resp := runDelete(t, r, labelWithRevoke)
@@ -333,7 +506,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		expectRoleOID(mock)
 		expectPrivilegeDatabases(mock, testDatabase)
 		expectMaskingPrivileges(mock, whatAnonGrants...)
-		expectHasPrivilegesOfOwner(mock, false)
+		expectOwnerPrivilegeState(mock, false, true, false)
 		expectExec(mock, `GRANT "owner" TO CURRENT_USER;`)
 		expectHasPrivilegesOfOwner(mock, true)
 		mock.ExpectBegin()
@@ -341,6 +514,7 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 		mock.ExpectCommit()
 		expectMaskingPrivileges(mock)
 		expectExecError(mock, `REVOKE "owner" FROM CURRENT_USER;`, errors.New("connection reset"))
+		expectAdvisoryUnlock(mock)
 		mock.ExpectClose()
 
 		resp := runDelete(t, r, labelWithRevoke)
@@ -361,6 +535,15 @@ func TestSecurityLabelResource_DeleteWithRevoke(t *testing.T) {
 	})
 }
 
+func TestMaskingRevokeSQLGuards(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, sqlMaskingPrivileges, "pg_extension", "must require the anon extension before touching anon/mask schemas")
+	assert.Contains(t, sqlMaskingPrivileges, "extname = 'anon'")
+	assert.Contains(t, sqlRolePrivilegeDatabases, "d.datallowconn")
+	assert.Contains(t, sqlRolePrivilegeDatabases, "has_database_privilege(d.oid, 'CONNECT')")
+}
+
 // The tests below need a PostgreSQL server. See helpers_postgres_test.go.
 //
 // Their roles and databases copy what dynamic masking leaves behind: privileges on two schemas, in
@@ -371,7 +554,11 @@ const (
 	testNobody      = "pgrole_test_nobody"      // may log in and nothing else
 )
 
-var testDatabases = []string{"pgrole_test_db1", "pgrole_test_db2"}
+var (
+	testAnonDatabases  = []string{"pgrole_test_db1", "pgrole_test_db2"}
+	testNoAnonDatabase = "pgrole_test_no_anon"
+	testDatabases      = append(append([]string(nil), testAnonDatabases...), testNoAnonDatabase)
+)
 
 // A maskingLayout holds the connections of a test to the layout above.
 type maskingLayout struct {
@@ -411,22 +598,34 @@ func newMaskingLayout(t *testing.T, server testServer, db *sql.DB) maskingLayout
 	if l.adminOnly {
 		mustExec(t, db, fmt.Sprintf("GRANT %q TO %q WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;", testOwner, testProvisioner))
 	}
+	return l
+}
 
-	for _, database := range testDatabases {
-		mustExec(t, db, fmt.Sprintf("CREATE DATABASE %q OWNER %q TEMPLATE template0;", database, testOwner))
+// setupTestDatabases creates two databases with the anon extension and one without it that still
+// has a "mask" schema, so tests verify both revoking and leaving non-anon databases alone.
+func (l *maskingLayout) setupTestDatabases(t *testing.T) {
+	t.Helper()
+
+	mustExec(t, l.superuser, fmt.Sprintf("ALTER ROLE %q SUPERUSER;", testOwner))
+	defer mustExec(t, l.superuser, fmt.Sprintf("ALTER ROLE %q NOSUPERUSER;", testOwner))
+
+	for _, database := range testAnonDatabases {
+		mustExec(t, l.superuser, fmt.Sprintf("CREATE DATABASE %q OWNER %q TEMPLATE template0;", database, testOwner))
 		conn := l.open(t, testOwner, "owner", database)
-		// What PostgreSQL Anonymizer has in a database with dynamic masking: its own schema,
-		// and a schema with one view per table.
-		mustExec(t, conn, "CREATE SCHEMA anon;")
-		mustExec(t, conn, "CREATE TABLE anon.config (id int);")
-		mustExec(t, conn, "CREATE SEQUENCE anon.seq;")
+		mustExec(t, conn, "CREATE EXTENSION anon CASCADE;")
 		mustExec(t, conn, "CREATE SCHEMA app;")
 		mustExec(t, conn, "CREATE TABLE app.users (id int);")
-		mustExec(t, conn, "CREATE SCHEMA mask;")
+		mustExec(t, conn, "CREATE SCHEMA IF NOT EXISTS mask;")
 		mustExec(t, conn, "CREATE VIEW mask.users AS SELECT id FROM app.users;")
 		l.owner[database] = conn
 	}
-	return l
+	mustExec(t, l.superuser, fmt.Sprintf("ALTER ROLE %q NOSUPERUSER;", testOwner))
+
+	mustExec(t, l.superuser, fmt.Sprintf("CREATE DATABASE %q OWNER %q TEMPLATE template0;", testNoAnonDatabase, testOwner))
+	noAnon := l.open(t, testOwner, "owner", testNoAnonDatabase)
+	mustExec(t, noAnon, "CREATE SCHEMA mask;")
+	mustExec(t, noAnon, "CREATE TABLE mask.items (id int);")
+	l.owner[testNoAnonDatabase] = noAnon
 }
 
 // open connects to one of the test databases, until the test ends.
@@ -440,13 +639,14 @@ func (l maskingLayout) open(t *testing.T, username, password, database string) *
 }
 
 // maskedRole creates a role that holds what PostgreSQL Anonymizer gives a masked role in every
-// test database, and privileges that have nothing to do with masking: on another schema, and on a
-// database.
+// anon test database, plus privileges that have nothing to do with masking: on another schema,
+// on a database without the anon extension that happens to have a "mask" schema, and on a database.
 func (l maskingLayout) maskedRole(t *testing.T, role string) {
 	t.Helper()
 
 	createRole(t, l.superuser, role)
-	for _, conn := range l.owner {
+	for _, database := range testAnonDatabases {
+		conn := l.owner[database]
 		mustExec(t, conn, fmt.Sprintf("GRANT USAGE ON SCHEMA anon, mask TO %q;", role))
 		mustExec(t, conn, fmt.Sprintf("GRANT SELECT ON ALL TABLES IN SCHEMA anon, mask TO %q;", role))
 		mustExec(t, conn, fmt.Sprintf("GRANT SELECT ON ALL SEQUENCES IN SCHEMA anon TO %q;", role))
@@ -454,7 +654,10 @@ func (l maskingLayout) maskedRole(t *testing.T, role string) {
 		mustExec(t, conn, fmt.Sprintf("GRANT USAGE ON SCHEMA app TO %q;", role))
 		mustExec(t, conn, fmt.Sprintf("GRANT SELECT ON app.users TO %q;", role))
 	}
-	mustExec(t, l.owner[testDatabases[0]], fmt.Sprintf("GRANT CONNECT ON DATABASE %q TO %q;", testDatabases[0], role))
+	noAnon := l.owner[testNoAnonDatabase]
+	mustExec(t, noAnon, fmt.Sprintf("GRANT USAGE ON SCHEMA mask TO %q;", role))
+	mustExec(t, noAnon, fmt.Sprintf("GRANT SELECT ON mask.items TO %q;", role))
+	mustExec(t, l.owner[testAnonDatabases[0]], fmt.Sprintf("GRANT CONNECT ON DATABASE %q TO %q;", testAnonDatabases[0], role))
 
 	// Registered after createRole, so it runs first: once the role holds nothing in the test
 	// databases, it can be dropped.
@@ -499,8 +702,8 @@ ORDER BY 1;`, role)
 	return strings.Join(counts, ", ")
 }
 
-// provisionerMemberships lists the memberships of the provider's user, with who granted each.
-func (l maskingLayout) provisionerMemberships(t *testing.T) string {
+// roleMemberships lists the memberships of a role, with who granted each.
+func (l maskingLayout) roleMemberships(t *testing.T, role string) string {
 	t.Helper()
 
 	roles, err := queryStrings(t.Context(), l.superuser, `SELECT g.rolname || ' by ' || pg_get_userbyid(m.grantor)
@@ -508,14 +711,20 @@ FROM pg_auth_members m
 JOIN pg_roles g ON g.oid = m.roleid
 JOIN pg_roles r ON r.oid = m.member
 WHERE r.rolname = $1
-ORDER BY 1;`, testProvisioner)
-	require.NoError(t, err, "memberships of %s", testProvisioner)
+ORDER BY 1;`, role)
+	require.NoError(t, err, "memberships of %s", role)
 	return strings.Join(roles, ", ")
+}
+
+// provisionerMemberships lists the memberships of the provider's user, with who granted each.
+func (l maskingLayout) provisionerMemberships(t *testing.T) string {
+	t.Helper()
+	return l.roleMemberships(t, testProvisioner)
 }
 
 // revokeAs runs the revoke the way Delete does, as the given user. It does not go through Delete,
 // whose first statement needs the anon extension.
-func (l maskingLayout) revokeAs(t *testing.T, username, password, role string) error {
+func (l maskingLayout) revokeAs(t *testing.T, username, password, role string) ([]string, error) {
 	t.Helper()
 
 	getDB := l.server.getter(username, password)
@@ -527,30 +736,76 @@ func (l maskingLayout) revokeAs(t *testing.T, username, password, role string) e
 }
 
 const (
-	// What maskedRole gives a role, as privileges reports it: CONNECT on one database, and in
-	// each database 5 privileges from masking and 2 others.
-	privilegesOfMaskedRole = ":1, pgrole_test_db1:7, pgrole_test_db2:7"
-	// The same without the privileges from masking.
-	privilegesWithoutMasking = ":1, pgrole_test_db1:2, pgrole_test_db2:2"
+	// What survives after revoking masking privileges: CONNECT on pgrole_test_db1, the app schema
+	// + app.users in each anon database, and the unrelated mask schema + mask.items in the
+	// non-anon database.
+	privilegesWithoutMasking = ":1, pgrole_test_db1:2, pgrole_test_db2:2, pgrole_test_no_anon:2"
 )
 
-func TestRevokeMaskingPrivileges(t *testing.T) {
+func TestActAs_Postgres(t *testing.T) {
 	server := newTestServer(t)
 	db := server.open(t)
 	l := newMaskingLayout(t, server, db)
 
-	t.Run("revokes in every database and keeps the other privileges", func(t *testing.T) {
+	t.Run("NOINHERIT user keeps its pre-existing membership", func(t *testing.T) {
+		const noInheritUser = "pgrole_test_noinherit"
+		dropRole(t, db, noInheritUser)
+		mustExec(t, db, fmt.Sprintf("CREATE ROLE %q LOGIN PASSWORD 'noinherit' NOINHERIT CREATEROLE;", noInheritUser))
+		t.Cleanup(func() { dropRole(t, db, noInheritUser) })
+		mustExec(t, db, fmt.Sprintf("GRANT %q TO %q;", testOwner, noInheritUser))
+
+		before := l.roleMemberships(t, noInheritUser)
+		conn := l.open(t, noInheritUser, "noinherit", "postgres")
+		able, granted, err := actAs(t.Context(), conn, conn, testOwner)
+		require.NoError(t, err)
+		assert.False(t, able.can)
+		assert.False(t, granted)
+		assert.Contains(t, able.reason, "NOINHERIT")
+		assert.Equal(t, before, l.roleMemberships(t, noInheritUser), "existing membership must be untouched")
+	})
+
+	t.Run("CREATEROLE alone is not enough on PostgreSQL 16 and newer", func(t *testing.T) {
+		if !l.adminOnly {
+			t.Skip("before PostgreSQL 16, CREATEROLE lets a user grant itself any role")
+		}
+		mustExec(t, db, fmt.Sprintf("REVOKE %q FROM %q;", testOwner, testProvisioner))
+		defer mustExec(t, db, fmt.Sprintf("GRANT %q TO %q WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;", testOwner, testProvisioner))
+
+		conn := l.open(t, testProvisioner, "provisioner", "postgres")
+		able, granted, err := actAs(t.Context(), conn, conn, testOwner)
+		require.NoError(t, err)
+		assert.False(t, able.can)
+		assert.False(t, granted)
+		assert.NotEmpty(t, able.reason)
+	})
+}
+
+func TestRevokeMaskingPrivileges(t *testing.T) {
+	server := newTestServer(t)
+	db := server.open(t)
+	if !hasAnon(t, db) {
+		t.Skip("the anon extension is not loaded on the test server")
+	}
+	l := newMaskingLayout(t, server, db)
+	l.setupTestDatabases(t)
+
+	t.Run("revokes in every anon database and keeps the other privileges", func(t *testing.T) {
 		const role = "pgrole_test_masked"
 		l.maskedRole(t, role)
 		memberships := l.provisionerMemberships(t)
-		require.Equal(t, privilegesOfMaskedRole, l.privileges(t, role), "before the revoke")
+		before := l.privileges(t, role)
+		require.NotEqual(t, privilegesWithoutMasking, before, "before the revoke")
 
-		require.NoError(t, l.revokeAs(t, testProvisioner, "provisioner", role))
+		warnings, err := l.revokeAs(t, testProvisioner, "provisioner", role)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
 		assert.Equal(t, privilegesWithoutMasking, l.privileges(t, role))
 		assert.Equal(t, memberships, l.provisionerMemberships(t), "the provider's user must keep no membership")
 
 		// A second run has nothing to do.
-		require.NoError(t, l.revokeAs(t, testProvisioner, "provisioner", role))
+		warnings, err = l.revokeAs(t, testProvisioner, "provisioner", role)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
 		assert.Equal(t, privilegesWithoutMasking, l.privileges(t, role))
 	})
 
@@ -559,25 +814,32 @@ func TestRevokeMaskingPrivileges(t *testing.T) {
 		createRole(t, db, role)
 		memberships := l.provisionerMemberships(t)
 
-		require.NoError(t, l.revokeAs(t, testProvisioner, "provisioner", role))
+		warnings, err := l.revokeAs(t, testProvisioner, "provisioner", role)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
 		dropRole(t, db, role)
-		require.NoError(t, l.revokeAs(t, testProvisioner, "provisioner", role))
+		warnings, err = l.revokeAs(t, testProvisioner, "provisioner", role)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
 		assert.Equal(t, memberships, l.provisionerMemberships(t))
 	})
 
 	t.Run("fails when the user cannot act as the owner", func(t *testing.T) {
 		const role = "pgrole_test_stuck"
 		l.maskedRole(t, role)
+		before := l.privileges(t, role)
 
-		err := l.revokeAs(t, testNobody, "nobody", role)
+		_, err := l.revokeAs(t, testNobody, "nobody", role)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "could not get")
 		assert.Contains(t, err.Error(), `database "pgrole_test_db1"`)
 		assert.Contains(t, err.Error(), `database "pgrole_test_db2"`)
-		assert.Equal(t, privilegesOfMaskedRole, l.privileges(t, role), "nothing must be revoked")
+		assert.Equal(t, before, l.privileges(t, role), "nothing must be revoked")
 
 		// A superuser needs no membership.
-		require.NoError(t, l.revokeAs(t, server.username, server.password, role))
+		warnings, err := l.revokeAs(t, server.username, server.password, role)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
 		assert.Equal(t, privilegesWithoutMasking, l.privileges(t, role))
 	})
 
@@ -587,14 +849,15 @@ func TestRevokeMaskingPrivileges(t *testing.T) {
 		}
 		const role = "pgrole_test_no_admin"
 		l.maskedRole(t, role)
+		before := l.privileges(t, role)
 
 		mustExec(t, db, fmt.Sprintf("REVOKE %q FROM %q;", testOwner, testProvisioner))
 		defer mustExec(t, db, fmt.Sprintf("GRANT %q TO %q WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;", testOwner, testProvisioner))
 
-		err := l.revokeAs(t, testProvisioner, "provisioner", role)
+		_, err := l.revokeAs(t, testProvisioner, "provisioner", role)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ADMIN OPTION")
-		assert.Equal(t, privilegesOfMaskedRole, l.privileges(t, role), "nothing must be revoked")
+		assert.Equal(t, before, l.privileges(t, role), "nothing must be revoked")
 	})
 
 	t.Run("several roles at once", func(t *testing.T) {
@@ -618,7 +881,7 @@ func TestRevokeMaskingPrivileges(t *testing.T) {
 					return
 				}
 				defer db.Close()
-				errs[i] = (&securityLabelResource{getDB: getDB}).revokeMaskingPrivileges(ctx, db, role)
+				_, errs[i] = (&securityLabelResource{getDB: getDB}).revokeMaskingPrivileges(ctx, db, role)
 			})
 		}
 		wg.Wait()

@@ -313,7 +313,11 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 
 	// After the label, not before: as long as the role has its label, the next table that is
 	// created, altered or dropped gives it everything back.
-	if err := r.revokeMaskingPrivileges(ctx, db, state.Role); err != nil {
+	warnings, err := r.revokeMaskingPrivileges(ctx, db, state.Role)
+	for _, warning := range warnings {
+		resp.Diagnostics.AddWarning("Skipped database while revoking masking privileges", warning)
+	}
+	if err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to revoke the masking privileges of the role",
 			fmt.Sprintf("The security label of role %s is removed, but what PostgreSQL Anonymizer granted it could not all be revoked, so the role may not be droppable yet. The resource stays in the state and the next apply tries again.\n\n%s", state.Role, err),

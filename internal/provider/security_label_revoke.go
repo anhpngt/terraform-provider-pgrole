@@ -23,35 +23,67 @@ import (
 //
 // The code in this file takes those privileges back, and only those.
 
-// maskingRevokeMu lets one revoke run at a time. A revoke may give the provider's user memberships
-// and takes them back when it is done: run in parallel, one revoke would take away a membership
-// that another one, for a role with privileges on objects of the same owner, still relies on.
+// maskingRevokeMu lets one revoke run at a time within this process, paired with a PostgreSQL
+// session advisory lock so concurrent Terraform runs against the same server also serialize their
+// temporary role memberships.
 var maskingRevokeMu sync.Mutex
+
+// revokeAdvisoryLockKey identifies the session advisory lock used to serialize masking-privilege
+// revokes across processes on the same server.
+const revokeAdvisoryLockKey int64 = 0x7067726f6c655256 // "pgroleRV"
+
+type sqlClient interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
 
 const (
 	sqlRoleOID = "SELECT oid FROM pg_roles WHERE rolname = $1;"
 
-	// The databases where the role holds privileges. pg_shdepend is shared by all databases, so
-	// one connection sees the whole server.
-	sqlRolePrivilegeDatabases = `SELECT d.datname
+	// The connectable databases where the role holds privileges, and whether the provider's user
+	// has CONNECT on each. pg_shdepend is shared by all databases, so one connection sees the
+	// whole server.
+	sqlRolePrivilegeDatabases = `SELECT d.datname, has_database_privilege(d.oid, 'CONNECT')
 FROM pg_database d
-WHERE d.oid IN (
-	SELECT s.dbid FROM pg_shdepend s
-	WHERE s.refclassid = 'pg_authid'::regclass AND s.refobjid = $1::oid AND s.deptype = 'a'
-)
+WHERE d.datallowconn
+	AND d.oid IN (
+		SELECT s.dbid FROM pg_shdepend s
+		WHERE s.refclassid = 'pg_authid'::regclass AND s.refobjid = $1::oid AND s.deptype = 'a'
+	)
 ORDER BY 1;`
 
 	sqlCurrentDatabase = "SELECT current_database();"
 
+	sqlAcquireRevokeLock = "SELECT pg_advisory_lock($1);"
+	sqlReleaseRevokeLock = "SELECT pg_advisory_unlock($1);"
+
 	sqlHasPrivilegesOfRole = "SELECT pg_has_role($1::name, 'USAGE');"
 
+	// Checks whether CURRENT_USER already inherits the target role's privileges, whether
+	// CURRENT_USER inherits granted roles at all (rolinherit), and whether CURRENT_USER already
+	// holds a direct self-granted membership in the target role (which REVOKE FROM CURRENT_USER
+	// would remove).
+	sqlRolePrivilegeState = `SELECT pg_has_role($1::name, 'USAGE'),
+	(SELECT rolinherit FROM pg_roles WHERE rolname = current_user),
+	EXISTS (
+		SELECT 1
+		FROM pg_auth_members m
+		JOIN pg_roles r ON r.oid = m.roleid
+		JOIN pg_roles u ON u.oid = m.member
+		WHERE r.rolname = $1 AND u.rolname = current_user AND m.grantor = u.oid
+	);`
+
 	// What the role holds in the two schemas of PostgreSQL Anonymizer in the current database, as
-	// rows of kind, schema and owner of the objects. The schema of the masking views is "mask"
-	// unless anon.maskschema says otherwise.
+	// rows of kind, schema and owner of the objects. Requires the anon extension to be installed in
+	// the database so unrelated schemas named "mask" or "anon" are never touched. The schema of the
+	// masking views is "mask" unless anon.maskschema says otherwise.
 	sqlMaskingPrivileges = `WITH masking_schema AS (
 	SELECT n.oid, n.nspname, n.nspowner, n.nspacl
 	FROM pg_namespace n
-	WHERE n.nspname IN ('anon', COALESCE(NULLIF(current_setting('anon.maskschema', true), ''), 'mask'))
+	WHERE EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'anon')
+		AND n.nspname IN ('anon', COALESCE(NULLIF(current_setting('anon.maskschema', true), ''), 'mask'))
 )
 SELECT DISTINCT 'tables', n.nspname, pg_get_userbyid(c.relowner)
 FROM masking_schema n
@@ -133,9 +165,32 @@ func queryStrings(ctx context.Context, db *sql.DB, query string, args ...any) ([
 	return values, rows.Err()
 }
 
+type rolePrivilegeDatabase struct {
+	name       string
+	canConnect bool
+}
+
+func rolePrivilegeDatabases(ctx context.Context, db sqlClient, roleOID int64) ([]rolePrivilegeDatabase, error) {
+	rows, err := db.QueryContext(ctx, sqlRolePrivilegeDatabases, roleOID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var databases []rolePrivilegeDatabase
+	for rows.Next() {
+		var d rolePrivilegeDatabase
+		if err := rows.Scan(&d.name, &d.canConnect); err != nil {
+			return nil, err
+		}
+		databases = append(databases, d)
+	}
+	return databases, rows.Err()
+}
+
 // maskingPrivileges returns what the role holds in the schemas of PostgreSQL Anonymizer, in the
 // database of the connection.
-func maskingPrivileges(ctx context.Context, db *sql.DB, roleOID int64) ([]maskingPrivilege, error) {
+func maskingPrivileges(ctx context.Context, db sqlClient, roleOID int64) ([]maskingPrivilege, error) {
 	rows, err := db.QueryContext(ctx, sqlMaskingPrivileges, roleOID)
 	if err != nil {
 		return nil, err
@@ -168,9 +223,9 @@ func describeMaskingPrivileges(held []maskingPrivilege) string {
 //
 // Call it once the label of the role is removed: as long as the role has its label, the next table
 // that is created, altered or dropped gives it everything back.
-func (r *securityLabelResource) revokeMaskingPrivileges(ctx context.Context, db *sql.DB, role string) (err error) {
+func (r *securityLabelResource) revokeMaskingPrivileges(ctx context.Context, db *sql.DB, role string) (warnings []string, err error) {
 	if err := validateRoleName(role); err != nil {
-		return err
+		return nil, err
 	}
 
 	maskingRevokeMu.Lock()
@@ -180,32 +235,69 @@ func (r *securityLabelResource) revokeMaskingPrivileges(ctx context.Context, db 
 	switch err := db.QueryRowContext(ctx, sqlRoleOID, role).Scan(&roleOID); {
 	case errors.Is(err, sql.ErrNoRows):
 		// The role is gone, and its privileges with it.
-		return nil
+		return nil, nil
 	case err != nil:
-		return fmt.Errorf("failed to look up role %q: %w", role, err)
+		return nil, fmt.Errorf("failed to look up role %q: %w", role, err)
 	}
 
-	databases, err := queryStrings(ctx, db, sqlRolePrivilegeDatabases, roleOID)
+	allDatabases, err := rolePrivilegeDatabases(ctx, db, roleOID)
 	if err != nil {
-		return fmt.Errorf("failed to list the databases where role %q holds privileges: %w", role, err)
+		return nil, fmt.Errorf("failed to list the databases where role %q holds privileges: %w", role, err)
+	}
+
+	var databases []string
+	for _, d := range allDatabases {
+		if !d.canConnect {
+			warnings = append(warnings, fmt.Sprintf("Skipped database %q because the provider's user does not have CONNECT privilege on it. If PostgreSQL Anonymizer is installed there, grant CONNECT to the provider's user or revoke the role's masking privileges manually.", d.name))
+			continue
+		}
+		databases = append(databases, d.name)
 	}
 	if len(databases) == 0 {
-		return nil
+		return warnings, nil
 	}
+
+	// Pin a single session so the PostgreSQL advisory lock is acquired and released on the same
+	// backend connection, serializing temporary role memberships across concurrent Terraform runs.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return warnings, fmt.Errorf("failed to acquire database connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, sqlAcquireRevokeLock, revokeAdvisoryLockKey); err != nil {
+		return warnings, fmt.Errorf("failed to acquire advisory lock for revoking masking privileges: %w", err)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if _, unlockErr := conn.ExecContext(unlockCtx, sqlReleaseRevokeLock, revokeAdvisoryLockKey); unlockErr != nil {
+			tflog.Warn(ctx, "Failed to release advisory lock", map[string]any{"error": unlockErr.Error()})
+		}
+	}()
 
 	var current string
-	if err := db.QueryRowContext(ctx, sqlCurrentDatabase).Scan(&current); err != nil {
-		return fmt.Errorf("failed to get the name of the current database: %w", err)
+	if err := conn.QueryRowContext(ctx, sqlCurrentDatabase).Scan(&current); err != nil {
+		return warnings, fmt.Errorf("failed to get the name of the current database: %w", err)
 	}
 
-	// The memberships that the provider's user gave itself to be able to revoke.
+	// The memberships that the provider's user gave itself to be able to revoke. Registered after
+	// the advisory unlock defer so memberships are taken back while the lock is still held.
 	var granted []string
 	defer func() {
-		// The context may be canceled by now. The memberships must go anyway.
+		if len(granted) == 0 {
+			return
+		}
+		// The context may be canceled by now, and conn may have been aborted mid-query. Fall back
+		// to db when ctx is done so database/sql can open a healthy connection.
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
+		revokeTarget := sqlClient(conn)
+		if ctx.Err() != nil {
+			revokeTarget = db
+		}
 		for _, member := range granted {
-			if _, revokeErr := db.ExecContext(cleanupCtx, sqlRevokeMembership(member)); revokeErr != nil {
+			if _, revokeErr := revokeTarget.ExecContext(cleanupCtx, sqlRevokeMembership(member)); revokeErr != nil {
 				err = errors.Join(err, fmt.Errorf("failed to take back the membership in role %q that the provider's user gave itself: %w", member, revokeErr))
 			}
 		}
@@ -215,20 +307,20 @@ func (r *securityLabelResource) revokeMaskingPrivileges(ctx context.Context, db 
 	// when the destroy is run again.
 	var failures []error
 	for _, database := range databases {
-		newlyGranted, err := r.revokeMaskingPrivilegesIn(ctx, db, current, database, role, roleOID)
+		newlyGranted, err := r.revokeMaskingPrivilegesIn(ctx, conn, db, current, database, role, roleOID)
 		granted = append(granted, newlyGranted...)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("database %q: %w", database, err))
 			continue
 		}
 	}
-	return errors.Join(failures...)
+	return warnings, errors.Join(failures...)
 }
 
 // revokeMaskingPrivilegesIn does the work of revokeMaskingPrivileges in one database. main is the
-// connection to the database named current, which is used as it is. granted lists the memberships
-// that the provider's user gave itself on the way, also when an error is returned.
-func (r *securityLabelResource) revokeMaskingPrivilegesIn(ctx context.Context, main *sql.DB, current string, database string, role string, roleOID int64) (granted []string, err error) {
+// pinned connection to the database named current, which is used as it is. granted lists the
+// memberships that the provider's user gave itself on the way, also when an error is returned.
+func (r *securityLabelResource) revokeMaskingPrivilegesIn(ctx context.Context, main sqlClient, cleanupDB sqlClient, current string, database string, role string, roleOID int64) (granted []string, err error) {
 	db := main
 	if database != current {
 		other, err := r.getDB(withDatabase(ctx, database))
@@ -256,13 +348,13 @@ func (r *securityLabelResource) revokeMaskingPrivilegesIn(ctx context.Context, m
 		}
 		checked = append(checked, p.owner)
 
-		able, grantedNow, err := actAs(ctx, main, p.owner)
+		able, grantedNow, err := actAs(ctx, main, cleanupDB, p.owner)
 		if grantedNow {
 			granted = append(granted, p.owner)
 			tflog.Info(ctx, "Granted membership for the time of the revoke", map[string]any{"role": role, "member_of": p.owner})
 		}
 		if err != nil {
-			return granted, fmt.Errorf("failed to check the membership in role %q: %w", p.owner, err)
+			return granted, fmt.Errorf("failed to ensure membership in role %q: %w", p.owner, err)
 		}
 		if !able.can {
 			return granted, fmt.Errorf("revoking takes the privileges of role %q, the owner of %s, which the provider's user does not have and could not get: %s. On PostgreSQL 16 and newer it must already be a member of that role, or have ADMIN OPTION on it", p.owner, p, able.reason)
@@ -299,35 +391,64 @@ type ability struct {
 }
 
 // actAs makes sure the provider's user has the privileges of the role, by granting itself
-// membership when it lacks them. granted reports whether it did, also when the membership turns
-// out not to be enough.
-func actAs(ctx context.Context, db *sql.DB, role string) (result ability, granted bool, err error) {
-	var has bool
-	if err := db.QueryRowContext(ctx, sqlHasPrivilegesOfRole, role).Scan(&has); err != nil {
+// membership when it lacks them. granted reports whether it added a membership that the caller
+// must revoke on cleanup, including when the membership turns out not to be enough or an
+// interrupted GRANT still committed on the server.
+func actAs(ctx context.Context, db sqlClient, cleanupDB sqlClient, role string) (result ability, granted bool, err error) {
+	var hasUsage, canInherit, hasSelfGranted bool
+	if err := db.QueryRowContext(ctx, sqlRolePrivilegeState, role).Scan(&hasUsage, &canInherit, &hasSelfGranted); err != nil {
 		return ability{}, false, err
 	}
-	if has {
+	if hasUsage {
 		return ability{can: true}, false, nil
+	}
+	if !canInherit {
+		// GRANT without WITH INHERIT TRUE never grants USAGE to a NOINHERIT user, and on
+		// PostgreSQL 15 and older a subsequent REVOKE would remove a pre-existing membership.
+		return ability{reason: "the provider's user has NOINHERIT and does not inherit the privileges of granted roles"}, false, nil
+	}
+	if hasSelfGranted {
+		// On PostgreSQL 16 and newer, CURRENT_USER already holds a self-granted non-inheriting
+		// membership in role; GRANT would not change it and REVOKE would remove it.
+		return ability{reason: "it is already a member of the role without inheriting its privileges"}, false, nil
 	}
 
 	if _, err := db.ExecContext(ctx, sqlGrantMembership(role)); err != nil {
-		// Not being allowed to is an answer, not a failure of the check.
-		return ability{reason: err.Error()}, false, nil //nolint:nilerr
+		if isInsufficientPrivilege(err) {
+			return ability{reason: err.Error()}, false, nil
+		}
+		// Only a non-server error (cancellation or transport failure) could have committed the
+		// GRANT without delivering the response. Check so cleanup can still take it back.
+		var pqErr *pq.Error
+		if !errors.As(err, &pqErr) {
+			checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			var committed bool
+			if checkErr := cleanupDB.QueryRowContext(checkCtx, sqlHasPrivilegesOfRole, role).Scan(&committed); checkErr == nil && committed {
+				return ability{}, true, err
+			}
+		}
+		return ability{}, false, err
 	}
 
-	if err := db.QueryRowContext(ctx, sqlHasPrivilegesOfRole, role).Scan(&has); err != nil {
+	if err := db.QueryRowContext(ctx, sqlHasPrivilegesOfRole, role).Scan(&hasUsage); err != nil {
 		return ability{}, true, err
 	}
-	if !has {
+	if !hasUsage {
 		return ability{reason: "it is a member of the role now, but does not inherit its privileges"}, true, nil
 	}
 	return ability{can: true}, true, nil
 }
 
+func isInsufficientPrivilege(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42501"
+}
+
 // execWithRetry runs the statements in one transaction, and runs them again when they fail because
 // of something else that changed the same objects at the same moment. PostgreSQL Anonymizer
 // rebuilds its masking views on every change of a table, so that is not rare.
-func execWithRetry(ctx context.Context, db *sql.DB, statements []string) error {
+func execWithRetry(ctx context.Context, db sqlClient, statements []string) error {
 	const attempts = 3
 
 	var err error
@@ -348,7 +469,7 @@ func execWithRetry(ctx context.Context, db *sql.DB, statements []string) error {
 	return err
 }
 
-func execInTransaction(ctx context.Context, db *sql.DB, statements []string) error {
+func execInTransaction(ctx context.Context, db sqlClient, statements []string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
