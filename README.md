@@ -45,10 +45,10 @@ Some tests run against a real PostgreSQL server, as a superuser (`PGROLE_TEST_US
 
 ```sh
 PGROLE_TEST_HOST=127.0.0.1 PGROLE_TEST_PORT=5432 TF_ACC=1 go test ./internal/provider/ \
-  -run 'TestRoleSettings|TestSettingsOfOneRoleAppliedInParallel|TestAccRoleDroppedOutsideTerraform'
+  -run 'TestRoleSettings|TestSettingsOfOneRoleAppliedInParallel|TestRevokeMaskingPrivileges|TestSecurityLabelRevokeOnDestroy_DynamicMasking|TestAccRoleDroppedOutsideTerraform|TestAccSecurityLabelRevokeOnDestroy'
 ```
 
-The security label cases need the `anon` extension to be loaded and are skipped without it.
+The security label and dynamic masking cases need the `anon` extension to be loaded and are skipped without it.
 
 Testing are still under development for now. However, you can compile this provider
 and run it locally (probably against your own infrastructure) using [dev_overrides](https://developer.hashicorp.com/terraform/cli/config/config-file#development-overrides-for-provider-developers):
