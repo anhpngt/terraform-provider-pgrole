@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/lib/pq"
 )
@@ -64,7 +65,19 @@ This resource performs the following SQL operations:
 
 * **Create/Update**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';` + "`" + `
 * **Delete/Null**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS NULL;` + "`" + `
-* **Read**: Queries ` + "`pg_seclabels`" + ` system catalog for existing labels`,
+* **Read**: Queries ` + "`pg_seclabels`" + ` system catalog for existing labels
+
+## Revoking on destroy
+
+For every role with the ` + "`MASKED`" + ` label, PostgreSQL Anonymizer 1.x grants ` + "`USAGE`" + ` on its ` + "`anon`" + ` schema and on the schema of the masking views (` + "`mask`" + ` unless ` + "`anon.maskschema`" + ` says otherwise), and ` + "`SELECT`" + ` on the tables, views and sequences in them, in each database where dynamic masking runs. It does not take them back when the label is removed, and a role that still holds them cannot be dropped:
+
+` + "```" + `
+role "x" cannot be dropped because some objects depend on it
+` + "```" + `
+
+With ` + "`revoke_on_destroy = true`" + `, destroying this resource removes the label and then revokes those privileges in every database of the server. Nothing else that the role holds is touched. If a privilege cannot be revoked the destroy fails, the resource stays in the state, and the next apply tries again.
+
+A privilege is revoked with the privileges of the role that granted it, which is the owner of the masking views. Where the provider's user lacks them, it grants itself membership in that role for the time of the destroy, and takes it back afterwards. That works with ` + "`CREATEROLE`" + ` on PostgreSQL 15 and older. PostgreSQL 16 restricted ` + "`CREATEROLE`" + `: there the user must already be a member of that role, or have ` + "`ADMIN OPTION`" + ` on it.`,
 		Attributes: map[string]schema.Attribute{
 			"role": schema.StringAttribute{
 				Description: "Name of the role to apply the security label to.",
@@ -74,6 +87,10 @@ This resource performs the following SQL operations:
 				Description: "Security label value. Use 'MASKED' to enable dynamic masking for the role, or NULL to remove the label.",
 				Required:    true,
 			},
+			"revoke_on_destroy": schema.BoolAttribute{
+				Description: "When true, destroying the resource also revokes what PostgreSQL Anonymizer granted the role because of its label, in every database of the server, so that the role can be dropped. Defaults to false.",
+				Optional:    true,
+			},
 		},
 	}
 }
@@ -81,6 +98,9 @@ This resource performs the following SQL operations:
 type securityLabelModel struct {
 	Role  string `tfsdk:"role"`
 	Label string `tfsdk:"label"`
+	// RevokeOnDestroy is null when it is not set, which is the same as false. It has no default
+	// in the schema, so that the resources created before it existed plan no change.
+	RevokeOnDestroy types.Bool `tfsdk:"revoke_on_destroy"`
 }
 
 // Configure adds the provider configured client to the resource.
@@ -286,6 +306,20 @@ func (r *securityLabelResource) Delete(ctx context.Context, req resource.DeleteR
 	tflog.Info(ctx, "Deleted security label for role", map[string]any{
 		"role": state.Role,
 	})
+
+	if !state.RevokeOnDestroy.ValueBool() {
+		return
+	}
+
+	// After the label, not before: as long as the role has its label, the next table that is
+	// created, altered or dropped gives it everything back.
+	if err := r.revokeMaskingPrivileges(ctx, db, state.Role); err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to revoke the masking privileges of the role",
+			fmt.Sprintf("The security label of role %s is removed, but what PostgreSQL Anonymizer granted it could not all be revoked, so the role may not be droppable yet. The resource stays in the state and the next apply tries again.\n\n%s", state.Role, err),
+		)
+		return
+	}
 }
 
 func (r *securityLabelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
