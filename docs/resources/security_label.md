@@ -14,6 +14,13 @@ description: |-
   SQL Operations
   This resource performs the following SQL operations:
   Create/Update: SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';Delete/Null: SECURITY LABEL FOR anon ON ROLE role_name IS NULL;Read: Queries pg_seclabels system catalog for existing labels
+  Revoking on destroy
+  For every role with the MASKED label, PostgreSQL Anonymizer 1.x grants USAGE on its anon schema and on the schema of the masking views (mask unless anon.maskschema says otherwise), and SELECT on the tables, views and sequences in them, in each database where dynamic masking runs. It does not take them back when the label is removed, and a role that still holds them cannot be dropped:
+  
+  role "x" cannot be dropped because some objects depend on it
+  
+  With revoke_on_destroy = true, destroying this resource removes the label and then revokes those privileges in every database of the server. Nothing else that the role holds is touched. If a privilege cannot be revoked the destroy fails, the resource stays in the state, and the next apply tries again.
+  A privilege is revoked with the privileges of the role that granted it, which is the owner of the masking views. Where the provider's user lacks them, it grants itself membership in that role for the time of the destroy, and takes it back afterwards. That works with CREATEROLE on PostgreSQL 15 and older. PostgreSQL 16 restricted CREATEROLE: there the user must already be a member of that role, or have ADMIN OPTION on it.
 ---
 
 # pgrole_security_label (Resource)
@@ -47,12 +54,33 @@ This resource performs the following SQL operations:
 * **Delete/Null**: `SECURITY LABEL FOR anon ON ROLE role_name IS NULL;`
 * **Read**: Queries `pg_seclabels` system catalog for existing labels
 
+## Revoking on destroy
+
+For every role with the `MASKED` label, PostgreSQL Anonymizer 1.x grants `USAGE` on its `anon` schema and on the schema of the masking views (`mask` unless `anon.maskschema` says otherwise), and `SELECT` on the tables, views and sequences in them, in each database where dynamic masking runs. It does not take them back when the label is removed, and a role that still holds them cannot be dropped:
+
+```
+role "x" cannot be dropped because some objects depend on it
+```
+
+With `revoke_on_destroy = true`, destroying this resource removes the label and then revokes those privileges in every database of the server. Nothing else that the role holds is touched. If a privilege cannot be revoked the destroy fails, the resource stays in the state, and the next apply tries again.
+
+A privilege is revoked with the privileges of the role that granted it, which is the owner of the masking views. Where the provider's user lacks them, it grants itself membership in that role for the time of the destroy, and takes it back afterwards. That works with `CREATEROLE` on PostgreSQL 15 and older. PostgreSQL 16 restricted `CREATEROLE`: there the user must already be a member of that role, or have `ADMIN OPTION` on it.
+
 ## Example Usage
 
 ```terraform
 resource "pgrole_security_label" "masked_user" {
   role  = "app_user"
   label = "MASKED"
+}
+
+# With PostgreSQL Anonymizer 1.x, a masked role keeps the privileges that
+# dynamic masking gave it when its label is removed, and cannot be dropped.
+# revoke_on_destroy takes them back when this resource is destroyed.
+resource "pgrole_security_label" "masked_user_to_be_dropped" {
+  role              = "jane.doe@example.com"
+  label             = "MASKED"
+  revoke_on_destroy = true
 }
 ```
 
@@ -63,6 +91,10 @@ resource "pgrole_security_label" "masked_user" {
 
 - `label` (String) Security label value. Use 'MASKED' to enable dynamic masking for the role, or NULL to remove the label.
 - `role` (String) Name of the role to apply the security label to.
+
+### Optional
+
+- `revoke_on_destroy` (Boolean) When true, destroying the resource also revokes what PostgreSQL Anonymizer granted the role because of its label, in every database of the server, so that the role can be dropped. Defaults to false.
 
 ## Import
 
