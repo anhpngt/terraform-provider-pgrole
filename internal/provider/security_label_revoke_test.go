@@ -145,6 +145,8 @@ func TestIsTransient(t *testing.T) {
 	t.Parallel()
 
 	assert.True(t, isTransient(&pq.Error{Code: "XX000", Message: "tuple concurrently updated"}))
+	assert.True(t, isTransient(&pq.Error{Code: "XX000", Message: "cache lookup failed for relation 16390"}))
+	assert.True(t, isTransient(&pq.Error{Code: "42P01", Message: `relation "mask.users" does not exist`}))
 	assert.True(t, isTransient(fmt.Errorf("wrapped: %w", &pq.Error{Code: "40P01", Message: "deadlock detected"})))
 	assert.True(t, isTransient(&pq.Error{Code: "55P03", Message: "canceling statement due to lock timeout"}))
 	assert.False(t, isTransient(&pq.Error{Code: "42501", Message: "permission denied"}))
@@ -1076,7 +1078,7 @@ func TestSecurityLabelResource_StateWithoutRevokeOnDestroy(t *testing.T) {
 
 	r, mock := newMockedResource(t, NewSecurityLabelResource)
 	expectRoleCheck(mock, true)
-	mock.ExpectQuery("FROM pg_seclabels").WithArgs(testRole).
+	mock.ExpectQuery(exact(sqlReadSecurityLabel)).WithArgs(testRole).
 		WillReturnRows(sqlmock.NewRows([]string{"label"}).AddRow("MASKED"))
 	mock.ExpectClose()
 

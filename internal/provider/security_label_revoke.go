@@ -495,10 +495,12 @@ func isTransient(err error) bool {
 	switch pqErr.Code {
 	case "40001", // serialization_failure
 		"40P01", // deadlock_detected
-		"55P03": // lock_not_available
+		"55P03", // lock_not_available
+		"42P01": // undefined_table: view dropped mid-REVOKE while anon rebuilds masking views
 		return true
 	}
-	// Two changes of the privileges of one object at the same moment. It has no error code of
-	// its own.
-	return strings.Contains(pqErr.Message, "tuple concurrently")
+	// Two changes of the privileges of one object at the same moment, or a relation dropped
+	// concurrently while resolving its OID. Neither has a dedicated SQLSTATE.
+	return strings.Contains(pqErr.Message, "tuple concurrently") ||
+		strings.Contains(pqErr.Message, "cache lookup failed for relation")
 }

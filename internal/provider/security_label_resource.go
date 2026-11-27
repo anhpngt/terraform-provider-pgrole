@@ -9,6 +9,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/lib/pq"
@@ -65,7 +67,7 @@ This resource performs the following SQL operations:
 
 * **Create/Update**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';` + "`" + `
 * **Delete/Null**: ` + "`" + `SECURITY LABEL FOR anon ON ROLE role_name IS NULL;` + "`" + `
-* **Read**: Queries ` + "`pg_seclabels`" + ` system catalog for existing labels
+* **Read**: Queries ` + "`pg_shseclabel`" + ` system catalog for existing labels
 
 ## Revoking on destroy
 
@@ -82,6 +84,9 @@ A privilege is revoked with the privileges of the role that granted it, which is
 			"role": schema.StringAttribute{
 				Description: "Name of the role to apply the security label to.",
 				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"label": schema.StringAttribute{
 				Description: "Security label value. Use 'MASKED' to enable dynamic masking for the role, or NULL to remove the label.",
@@ -192,13 +197,7 @@ func (r *securityLabelResource) Read(ctx context.Context, req resource.ReadReque
 	}
 
 	var label sql.NullString
-	sqlstr := `SELECT label 
-FROM pg_seclabels 
-WHERE objtype = 'role' 
-AND provider = 'anon' 
-AND objname = $1`
-
-	err = db.QueryRowContext(ctx, sqlstr, state.Role).Scan(&label)
+	err = db.QueryRowContext(ctx, sqlReadSecurityLabel, state.Role).Scan(&label)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// No security label found, set to empty
@@ -330,12 +329,21 @@ func (r *securityLabelResource) ImportState(ctx context.Context, req resource.Im
 	resource.ImportStatePassthroughID(ctx, path.Root("role"), req, resp)
 }
 
-// sqlSetSecurityLabel generates SQL to set a security label for a role
+// sqlReadSecurityLabel looks up the anon security label by raw role name (pg_seclabels.objname
+// double-quotes identifiers that need quoting, such as email addresses).
+const sqlReadSecurityLabel = `SELECT l.label
+FROM pg_shseclabel l
+JOIN pg_roles r ON r.oid = l.objoid
+WHERE l.classoid = 'pg_authid'::regclass
+AND l.provider = 'anon'
+AND r.rolname = $1;`
+
+// sqlSetSecurityLabel generates SQL to set a security label for a role.
 func sqlSetSecurityLabel(role string, label string) string {
 	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS %s;", pq.QuoteIdentifier(role), pq.QuoteLiteral(label))
 }
 
-// sqlRemoveSecurityLabel generates SQL to remove a security label for a role
+// sqlRemoveSecurityLabel generates SQL to remove a security label for a role.
 func sqlRemoveSecurityLabel(role string) string {
 	return fmt.Sprintf("SECURITY LABEL FOR anon ON ROLE %s IS NULL;", pq.QuoteIdentifier(role))
 }

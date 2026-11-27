@@ -7,6 +7,9 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,6 +79,37 @@ func TestResources_Metadata(t *testing.T) {
 
 			assert.Equal(t, tc.typeName, resp.TypeName)
 			resourceSchema(t, r)
+		})
+	}
+}
+
+func TestResources_RoleRequiresReplace(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range allResources {
+		t.Run(tc.typeName, func(t *testing.T) {
+			t.Parallel()
+
+			r := tc.newResource()
+			attr, ok := resourceSchema(t, r).Attributes["role"].(schema.StringAttribute)
+			require.True(t, ok, "role must be a StringAttribute")
+
+			requiresReplace := false
+			for _, pm := range attr.PlanModifiers {
+				resp := &planmodifier.StringResponse{}
+				pm.PlanModifyString(t.Context(), planmodifier.StringRequest{
+					State:       stateOf(t, r, tc.model),
+					Plan:        planOf(t, r, tc.model),
+					StateValue:  types.StringValue("old_role"),
+					PlanValue:   types.StringValue("new_role"),
+					ConfigValue: types.StringValue("new_role"),
+				}, resp)
+				requireNoErrors(t, resp.Diagnostics)
+				if resp.RequiresReplace {
+					requiresReplace = true
+				}
+			}
+			assert.True(t, requiresReplace, "changing role must force replacement")
 		})
 	}
 }

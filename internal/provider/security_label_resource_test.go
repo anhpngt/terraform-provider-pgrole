@@ -2,7 +2,6 @@ package provider
 
 import (
 	"database/sql"
-	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -37,7 +36,7 @@ func TestSecurityLabelSQL(t *testing.T) {
 func TestSecurityLabelResource_CRUD(t *testing.T) {
 	t.Parallel()
 
-	readSQL := regexp.QuoteMeta("FROM pg_seclabels")
+	readSQL := exact(sqlReadSecurityLabel)
 
 	model := func(label string) securityLabelModel {
 		return securityLabelModel{Role: testRole, Label: label}
@@ -117,14 +116,35 @@ func TestSecurityLabelResource_CRUD(t *testing.T) {
 
 		// Import sets only the role. The label stays null until Read, so
 		// the model struct, which has no null string, cannot hold it.
-		resp := runImport(t, NewSecurityLabelResource(), testRole)
-		requireNoErrors(t, resp.Diagnostics)
+		for _, roleName := range []string{testRole, "jane.doe@example.com"} {
+			resp := runImport(t, NewSecurityLabelResource(), roleName)
+			requireNoErrors(t, resp.Diagnostics)
 
-		var role, label types.String
-		requireNoErrors(t, resp.State.GetAttribute(t.Context(), path.Root("role"), &role))
-		requireNoErrors(t, resp.State.GetAttribute(t.Context(), path.Root("label"), &label))
-		assert.Equal(t, testRole, role.ValueString())
-		assert.True(t, label.IsNull(), "label must be null after import, got %s", label)
+			var role, label types.String
+			requireNoErrors(t, resp.State.GetAttribute(t.Context(), path.Root("role"), &role))
+			requireNoErrors(t, resp.State.GetAttribute(t.Context(), path.Root("label"), &label))
+			assert.Equal(t, roleName, role.ValueString())
+			assert.True(t, label.IsNull(), "label must be null after import, got %s", label)
+		}
+	})
+
+	t.Run("read uses raw rolname for email role", func(t *testing.T) {
+		t.Parallel()
+
+		const emailRole = "jane.doe@example.com"
+		r, mock := newMockedResource(t, NewSecurityLabelResource)
+		mock.ExpectQuery(exact(roleExistsSQL)).WithArgs(emailRole).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		mock.ExpectQuery(readSQL).WithArgs(emailRole).
+			WillReturnRows(sqlmock.NewRows([]string{"label"}).AddRow("MASKED"))
+		mock.ExpectClose()
+
+		state := securityLabelModel{Role: emailRole, Label: "MASKED"}
+		resp := runRead(t, r, state)
+		requireNoErrors(t, resp.Diagnostics)
+		assertState(t, state, resp.State)
+		assert.Contains(t, sqlReadSecurityLabel, "pg_shseclabel")
+		assert.Contains(t, sqlReadSecurityLabel, "rolname = $1")
 	})
 }
 

@@ -13,7 +13,7 @@ description: |-
   For more information, see the PostgreSQL Anonymizer Dynamic Masking documentation https://postgresql-anonymizer.readthedocs.io/en/latest/dynamic_masking/.
   SQL Operations
   This resource performs the following SQL operations:
-  Create/Update: SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';Delete/Null: SECURITY LABEL FOR anon ON ROLE role_name IS NULL;Read: Queries pg_seclabels system catalog for existing labels
+  Create/Update: SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';Delete/Null: SECURITY LABEL FOR anon ON ROLE role_name IS NULL;Read: Queries pg_shseclabel system catalog for existing labels
   Revoking on destroy
   For every role with the MASKED label, PostgreSQL Anonymizer 1.x grants USAGE on its anon schema and on the schema of the masking views (mask unless anon.maskschema says otherwise), and SELECT on the tables, views and sequences in them, in each database where dynamic masking runs. It does not take them back when the label is removed, and a role that still holds them cannot be dropped:
   
@@ -52,7 +52,7 @@ This resource performs the following SQL operations:
 
 * **Create/Update**: `SECURITY LABEL FOR anon ON ROLE role_name IS 'label_value';`
 * **Delete/Null**: `SECURITY LABEL FOR anon ON ROLE role_name IS NULL;`
-* **Read**: Queries `pg_seclabels` system catalog for existing labels
+* **Read**: Queries `pg_shseclabel` system catalog for existing labels
 
 ## Revoking on destroy
 
